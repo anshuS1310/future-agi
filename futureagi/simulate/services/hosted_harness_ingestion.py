@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from uuid import UUID
 import hashlib
 import json
 import logging
@@ -769,7 +770,9 @@ def _apply_receipt_to_call(
         _apply_conversation_metrics,
         _apply_harness_evaluation_outputs,
         _dispatch_csat_once,
+        _dispatch_evaluations_once,
     )
+    from simulate.services.harness_evals import runnable_eval_config_ids
 
     _apply_harness_evaluation_outputs(call)
     update_fields.append("eval_outputs")
@@ -816,9 +819,31 @@ def _apply_receipt_to_call(
         _ensure_run_agent_is_voice(registration.job)
     if call.status == CallExecution.CallStatus.COMPLETED:
         call_id = call.id
+        run_test_id = getattr(call.test_execution, "run_test_id", None)
         transaction.on_commit(
             lambda: _dispatch_csat_once(CallExecution.objects.get(id=call_id))
         )
+        # The evals this run's contract chose, dispatched here because a hosted receipt never goes
+        # through the SDK result path where the platform evaluator is normally started. Without this
+        # the configs are created at provision and nothing ever runs them: measured on run
+        # 0734ab2e, four runnable configs, `eval_started` never set on any call, and no evaluation
+        # task in the worker. Ordering is the same as CSAT's, after commit so the row a task reads
+        # is the row this receipt wrote.
+        try:
+            selected = (
+                runnable_eval_config_ids(run_test_id)
+                if isinstance(run_test_id, (str, UUID))
+                else []
+            )
+        except Exception:  # noqa: BLE001 - a receipt is never lost over what it schedules next
+            logger.exception("harness_eval_selection_lookup_failed", call_id=str(call_id))
+            selected = []
+        if selected:
+            transaction.on_commit(
+                lambda: _dispatch_evaluations_once(
+                    CallExecution.objects.get(id=call_id), eval_config_ids=selected
+                )
+            )
 
 
 def _ensure_run_agent_is_voice(job: HostedHarnessJob) -> None:

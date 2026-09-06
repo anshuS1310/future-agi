@@ -34,6 +34,8 @@ except ImportError:
     VoiceServiceManager = None
 from tracer.models.observability_provider import ProviderChoices
 
+from tfc.utils.storage_client import server_reachable_url
+
 logger = structlog.get_logger(__name__)
 
 
@@ -4426,12 +4428,18 @@ class TestExecutor:
         Returns:
             dict: Transcript and voice recording data
         """
+        # Recordings are addressed so a server-side process can fetch them. A stored URL is
+        # browser-facing, and when that host is unreachable here `detect_single_item` sniffs it,
+        # fails, and silently classifies the URL as text: the judge is handed a link as its
+        # conversation and invents a call rather than abstaining.
         transcript_data = {
             "transcript": "",
-            "voice_recording": call_execution.recording_url or "",
+            "voice_recording": server_reachable_url(call_execution.recording_url or ""),
             "assistant_recording": "",
             "customer_recording": "",
-            "stereo_recording": call_execution.stereo_recording_url or "",
+            "stereo_recording": server_reachable_url(
+                call_execution.stereo_recording_url or ""
+            ),
             "user_chat_transcript": "",
             "assistant_chat_transcript": "",
         }

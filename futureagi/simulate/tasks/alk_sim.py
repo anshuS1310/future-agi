@@ -14,7 +14,7 @@ identical CSAT rule prompt, so scores are consistent across paths.
 from __future__ import annotations
 
 import structlog
-from django.db import close_old_connections
+from django.db import close_old_connections, transaction
 
 from simulate.constants.csat_score_prompt import CSAT_SCORE_PROMPT
 from simulate.models import CallExecution
@@ -178,11 +178,21 @@ def _set_csat_state(
     status: str,
     error: str = "",
 ) -> None:
-    metadata = dict(call.call_metadata or {})
-    metadata["csat_status"] = status
-    if error:
-        metadata["csat_error"] = error[:2000]
-    else:
-        metadata.pop("csat_error", None)
+    """Record where CSAT reached, without reverting what another writer put there meanwhile.
+
+    Saving ``call_metadata`` writes the whole column, and this task can be minutes old by the time it
+    reports: the evaluation flags land inside that window, so a copy taken at task start silently
+    undoes them. Measured: the worker logged "All evaluations completed" for calls whose
+    ``eval_completed`` was then absent, while ``eval_started``, written earlier, survived.
+    """
+    with transaction.atomic():
+        locked = CallExecution.objects.select_for_update().get(id=call.id)
+        metadata = dict(locked.call_metadata or {})
+        metadata["csat_status"] = status
+        if error:
+            metadata["csat_error"] = error[:2000]
+        else:
+            metadata.pop("csat_error", None)
+        locked.call_metadata = metadata
+        locked.save(update_fields=["call_metadata"])
     call.call_metadata = metadata
-    call.save(update_fields=["call_metadata"])

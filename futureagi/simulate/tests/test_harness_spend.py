@@ -157,3 +157,46 @@ def test_one_attempt_growing_does_not_disturb_another():
     assert spend["attempts"]["1"]["total_usd"] == 1.0
     assert spend["attempts"]["2"]["total_usd"] == 0.9
     assert spend["total_usd"] == 1.9
+
+
+def test_the_ledger_is_read_before_the_only_delete_that_exists(monkeypatch):
+    """One delete site, and the read must come first: after it, there is nothing left to ask.
+
+    Pins the ordering rather than the wording, so a second deletion path or a reordered one fails
+    here instead of silently losing a bill.
+    """
+    import sys
+    import types
+
+    from simulate.services import hosted_harness_gateway as gateway
+
+    # The method imports daytona at call time, and the SDK is not a test dependency.
+    fake = types.ModuleType("daytona")
+    fake.DaytonaNotFoundError = type("DaytonaNotFoundError", (Exception,), {})
+    monkeypatch.setitem(sys.modules, "daytona", fake)
+
+    order = []
+
+    class _Client:
+        def get(self, ref):
+            return "sandbox"
+
+        def delete(self, sandbox, **kwargs):
+            order.append("delete")
+
+    class _Attempt:
+        id = "attempt-3"
+        job_id = "job-3"
+        attempt_number = 1
+        provider_ref = "ref-3"
+
+    monkeypatch.setattr(
+        gateway, "_read_harness_spend", lambda *_: order.append("read_spend")
+    )
+    monkeypatch.setattr(gateway, "record_cleanup", lambda *a, **k: None)
+
+    driver = gateway.DaytonaHostedGateway.__new__(gateway.DaytonaHostedGateway)
+    driver.client = _Client()
+    driver._delete_and_record(_Attempt())
+
+    assert order == ["read_spend", "delete"]

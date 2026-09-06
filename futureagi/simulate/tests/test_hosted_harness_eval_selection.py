@@ -60,9 +60,9 @@ def test_a_voice_conversation_binds_to_the_combined_recording():
     the recording-slot guard names as correct; a chat run has no recording and uses transcript."""
     template = _template("customer_agent_conversation_quality", ["conversation"])
     assert resolve_eval_mapping(template, "voice") == {
-        "conversation": "voice_recording"
+        "conversation": "call.recording_url"
     }
-    assert resolve_eval_mapping(template, "text") == {"conversation": "transcript"}
+    assert resolve_eval_mapping(template, "text") == {"conversation": "call.transcript"}
 
 
 @pytest.mark.django_db
@@ -73,8 +73,8 @@ def test_both_prompt_key_names_resolve_to_the_agent_prompt():
     completion = _template(
         "customer_agent_task_completion", ["agent_prompt", "conversation"]
     )
-    assert resolve_eval_mapping(conformance, "voice")["system_prompt"] == "agent_prompt"
-    assert resolve_eval_mapping(completion, "voice")["agent_prompt"] == "agent_prompt"
+    assert resolve_eval_mapping(conformance, "voice")["system_prompt"] == "call.agent_prompt"
+    assert resolve_eval_mapping(completion, "voice")["agent_prompt"] == "call.agent_prompt"
 
 
 @pytest.mark.django_db
@@ -279,7 +279,7 @@ def test_provision_creates_configs_for_chosen_evals(organization, workspace):
     job.refresh_from_db()
     configs = list(SimulateEvalConfig.objects.filter(run_test=job.run_test))
     assert len(configs) == 1
-    assert configs[0].mapping == {"conversation": "voice_recording"}
+    assert configs[0].mapping == {"conversation": "call.recording_url"}
 
 
 @pytest.mark.django_db

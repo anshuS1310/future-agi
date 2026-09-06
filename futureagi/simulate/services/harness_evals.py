@@ -57,26 +57,27 @@ _VOICE_ONLY_EVALS = frozenset(
     }
 )
 
-# Required key to the source alias the eval runner already resolves. Voice and chat differ in
-# one place only, and that place is the point of the split.
+# Required key to the source the eval runner resolves, written in the dot form the dashboard itself
+# emits so a harness-made config is the same shape as a hand-made one and can be opened and edited.
 _SOURCE_BY_KEY_VOICE = {
-    # The whole conversation as audio. `voice_recording` is the combined recording, which is
-    # what `assert_recording_slot_available` names as the correct whole-conversation source; a
-    # per-channel or stereo mapping resolves empty on combined-only providers.
-    "conversation": "voice_recording",
+    # The source a working hand-made config uses. `call.voice_recording` resolves to the stored URL,
+    # which a judge cannot fetch when the browser-facing host is not reachable server side, and a
+    # judge given no audio invents a conversation rather than abstaining. Measured on one call: this
+    # alias produced a grounded verdict where the other produced a fabricated 1.0.
+    "conversation": "call.recording_url",
     # A single-output eval on a call is judging the same conversation.
-    "output": "voice_recording",
+    "output": "call.recording_url",
     # Both names mean the target agent's own instructions, resolved from the agent version's
     # configuration snapshot.
-    "agent_prompt": "agent_prompt",
-    "system_prompt": "agent_prompt",
+    "agent_prompt": "call.agent_prompt",
+    "system_prompt": "call.agent_prompt",
 }
 _SOURCE_BY_KEY_TEXT = {
     # A chat run has no recording, so the conversation is its transcript text.
-    "conversation": "transcript",
-    "output": "transcript",
-    "agent_prompt": "agent_prompt",
-    "system_prompt": "agent_prompt",
+    "conversation": "call.transcript",
+    "output": "call.transcript",
+    "agent_prompt": "call.agent_prompt",
+    "system_prompt": "call.agent_prompt",
 }
 
 

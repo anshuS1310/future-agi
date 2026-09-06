@@ -42,6 +42,8 @@ from simulate.temporal.types.activities import (
 from simulate.utils.eval_summary import derive_kpi_output_type
 from tfc.utils.case import to_camel_case, to_snake_case
 
+from tfc.utils.storage_client import server_reachable_url
+
 logger = structlog.get_logger(__name__)
 
 # ============================================================================
@@ -303,11 +305,19 @@ def _build_transcript_data(call_execution):
                 assistant_chat_transcript_text
             )
 
-        # Read recording URLs from call_execution fields (already stored by Phase 4)
+        # Read recording URLs from call_execution fields (already stored by Phase 4).
+        # Addressed the way this process can reach them: a stored URL is built for a browser, and on
+        # the self-hosted stack that names localhost, which inside this container is this container.
+        # An eval bound to a recording then fetches nothing, and a judge given no audio does not
+        # abstain, it invents a conversation and scores it.
         if call_execution.recording_url:
-            transcript_data["voice_recording"] = call_execution.recording_url
+            transcript_data["voice_recording"] = server_reachable_url(
+                call_execution.recording_url
+            )
         if call_execution.stereo_recording_url:
-            transcript_data["stereo_recording"] = call_execution.stereo_recording_url
+            transcript_data["stereo_recording"] = server_reachable_url(
+                call_execution.stereo_recording_url
+            )
 
         # Read assistant/customer recordings from provider_call_data
         if call_execution.provider_call_data:

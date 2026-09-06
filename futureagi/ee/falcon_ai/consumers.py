@@ -16,6 +16,7 @@ from ee.usage.services.config import BillingConfig
 from ee.usage.services.emitter import emit
 from ee.usage.services.metering import check_usage
 from tfc.ee_gating import EEFeature, FeatureUnavailable, check_ee_feature
+from tfc.utils.storage_client import server_reachable_url
 
 logger = structlog.get_logger(__name__)
 
@@ -776,7 +777,7 @@ class FalconAIConsumer(AsyncJsonWebsocketConsumer):
                 try:
                     import httpx
 
-                    resp = httpx.get(f.storage_url, timeout=10)
+                    resp = httpx.get(server_reachable_url(f.storage_url), timeout=10)
                     if resp.status_code == 200:
                         img_b64 = base64.b64encode(resp.content).decode("utf-8")
                         images.append(

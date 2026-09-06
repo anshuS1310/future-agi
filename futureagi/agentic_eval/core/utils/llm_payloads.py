@@ -19,6 +19,7 @@ import structlog
 from agentic_eval.core.utils.model_config import LiteLlmProvider
 from agentic_eval.core_evals.fi_utils.exceptions import MediaNotAccessibleError
 from tfc.utils.storage import download_image_from_url
+from tfc.utils.storage_client import server_reachable_url
 
 logger = structlog.get_logger(__name__)
 
@@ -308,7 +309,7 @@ def build_pdf_content(
         if file_id and str(file_id).startswith(("http://", "https://")):
             import requests
 
-            r = requests.get(file_id, timeout=60)
+            r = requests.get(server_reachable_url(file_id), timeout=60)
             r.raise_for_status()
             pdf_data_url = (
                 f"data:{mime_type};base64,{base64.b64encode(r.content).decode('utf-8')}"
@@ -357,7 +358,7 @@ def build_file_reference_content(
         if str(file_id).startswith(("http://", "https://")):
             import requests
 
-            r = requests.get(file_id, timeout=60)
+            r = requests.get(server_reachable_url(file_id), timeout=60)
             r.raise_for_status()
             data_url = (
                 f"data:{mime_type};base64,{base64.b64encode(r.content).decode('utf-8')}"

@@ -76,6 +76,7 @@ from agentic_eval.core.utils.jinja_utils import nest_dotted_value
 from agentic_eval.core.utils.model_config import ModelConfigs
 from agentic_eval.core.utils.score import clamp_unit_score
 from agentic_eval.core_evals.fi_utils.exceptions import MediaNotAccessibleError
+from tfc.utils.storage_client import server_reachable_url
 
 # ── User-facing error message ────────────────────────────────────────────
 #
@@ -391,7 +392,10 @@ def _build_openai_media_blocks(
             if not url.startswith(("http://", "https://")):
                 continue
 
-            req = _Request(url, headers={"User-Agent": "FutureAGI-EvalAgent/1.0"})
+            req = _Request(
+                server_reachable_url(url),
+                headers={"User-Agent": "FutureAGI-EvalAgent/1.0"},
+            )
             resp = _urlopen(req, timeout=30)
             raw_bytes = resp.read()
             b64_data = _base64.b64encode(raw_bytes).decode("utf-8")

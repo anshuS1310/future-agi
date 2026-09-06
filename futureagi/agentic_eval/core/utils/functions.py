@@ -12,6 +12,8 @@ from urllib.parse import urlparse
 
 import filetype
 import requests
+
+from tfc.utils.storage_client import server_reachable_url
 from PIL import Image
 from pydantic import BaseModel
 from tenacity import retry, stop_after_attempt, wait_random_exponential
@@ -423,7 +425,7 @@ def generate_combined_subcriterias(client, criterias, user_defined_metrics):
 
 def download_image_to_base64(url):
     # Download the image
-    response = requests.get(url, timeout=_MEDIA_DOWNLOAD_TIMEOUT_SECONDS)
+    response = requests.get(server_reachable_url(url), timeout=_MEDIA_DOWNLOAD_TIMEOUT_SECONDS)
 
     # Check if the request was successful
     if response.status_code == 200:
@@ -446,7 +448,7 @@ def download_image_to_base64(url):
         )
 
 def download_audio_to_base64(url):
-    response = requests.get(url, timeout=_MEDIA_DOWNLOAD_TIMEOUT_SECONDS)
+    response = requests.get(server_reachable_url(url), timeout=_MEDIA_DOWNLOAD_TIMEOUT_SECONDS)
     if response.status_code == 200:
         audio_base64 = base64.b64encode(response.content).decode("utf-8")
         return audio_base64
@@ -504,7 +506,11 @@ def detect_input_type(input_item: Any) -> dict:
             # check for URLs first
             if isinstance(item, str) and (item.startswith(('http://', 'https://')) or (urlparse(item).scheme and urlparse(item).netloc)):
                 logger.info(' ----- HANDLING URL First Condition----- ')
-                with requests.get(item, timeout=100) as response:
+                # A stored URL is built for a browser, and on the self-hosted stack that names
+                # localhost, which inside this container is this container. Fetch it by the address a
+                # process here can actually reach, or an eval bound to a recording sees no audio and
+                # reports as though the call had none.
+                with requests.get(server_reachable_url(item), timeout=100) as response:
                     if response.status_code == 200:
                         content = response.content
                         kind = filetype.guess(content)

@@ -823,12 +823,9 @@ def _apply_receipt_to_call(
         transaction.on_commit(
             lambda: _dispatch_csat_once(CallExecution.objects.get(id=call_id))
         )
-        # The evals this run's contract chose, dispatched here because a hosted receipt never goes
-        # through the SDK result path where the platform evaluator is normally started. Without this
-        # the configs are created at provision and nothing ever runs them: measured on run
-        # 0734ab2e, four runnable configs, `eval_started` never set on any call, and no evaluation
-        # task in the worker. Ordering is the same as CSAT's, after commit so the row a task reads
-        # is the row this receipt wrote.
+        # A hosted receipt never travels the SDK result path that normally starts the evaluator, so
+        # without this the configs exist and nothing runs them. After commit, like CSAT, so the row
+        # a task reads is the row this receipt wrote.
         try:
             selected = (
                 runnable_eval_config_ids(run_test_id)

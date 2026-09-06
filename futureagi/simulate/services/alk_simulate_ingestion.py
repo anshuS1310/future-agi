@@ -855,11 +855,8 @@ def _roll_up_external_execution(test_execution_id) -> None:
         if calls.filter(status=CallExecution.CallStatus.COMPLETED).exists()
         else TestExecution.ExecutionStatus.FAILED
     )
-    # These two count transport, not verdicts: a call that connected and played is a completed
-    # call even when its scenario failed its checks. The scenario outcome is counted separately on
-    # the job, as `completed_count` and `failed_count`, which is what a harness run is read by.
-    # Measured on run 57baa0fe: ten calls all connected, eight scenarios failed, and both
-    # statements are true at once.
+    # Transport, not verdicts: a call that connected and played is completed even when its scenario
+    # failed its checks. The scenario outcome is counted on the job as completed_count/failed_count.
     completed_calls = calls.filter(status=CallExecution.CallStatus.COMPLETED).count()
     failed_calls = calls.filter(
         status__in=(

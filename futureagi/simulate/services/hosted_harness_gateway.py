@@ -2556,16 +2556,9 @@ def _offered_eval_catalogue(job: Any) -> list[dict[str, Any]]:
         authored = _authored_modality(job)
         if authored:
             return offered_evals(job.organization, job.workspace, authored)
-        # A fresh run has no contract at launch, because authoring happens inside the sandbox
-        # afterwards, so there is no modality to filter by yet. Offer both sets, each entry marked
-        # with the modality it belongs to, and let the guest keep the ones matching the modality it
-        # goes on to record. Filtering here on a guess produced a voice run offered only the text
-        # set, whose every entry the guest then refused as cross-modality.
-        # One entry per name, never two. Offering the same name once per modality made the guest
-        # keep whichever it saw last and refuse the model's correct choices as cross-modality:
-        # measured on run a5ffa58d, "chosen_evals names evals belonging to another modality than
-        # 'voice'". A name that both sets offer is marked `any`, which the guest already accepts,
-        # and a name only one set offers keeps that modality so the voice-only evals stay voice-only.
+        # A fresh run has no contract yet, so there is no modality to filter by: filtering on a
+        # guess offered a voice run only the text set, which the guest then refused wholesale. Offer
+        # both, one entry per name, marking a name both sets carry as `any` so the guest keeps it.
         by_name: dict[str, dict[str, Any]] = {}
         for modality in ("voice", "text"):
             for entry in offered_evals(job.organization, job.workspace, modality):

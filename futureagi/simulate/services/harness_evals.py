@@ -33,22 +33,17 @@ from simulate.models import RunTest, SimulateEvalConfig
 
 logger = structlog.get_logger(__name__)
 
-# Selected evals are bound to a run through a stable id so a retried provision cannot double
-# them. Distinct from the namespace used for harness-computed result columns.
+# Stable id so a retried provision cannot double the configs.
 _SELECTED_EVAL_NAMESPACE = uuid.UUID("2b0f2f19-2c65-4b1e-9c9a-2f1a3b4c5d6e")
 
-# A run cannot select more than this. Every selected eval is one judge call per call in the
-# suite, so a two-hundred-scenario run at this cap is already sixteen hundred judge calls.
+# Each selected eval is one judge call per call in the suite.
 MOST_SELECTED_EVALS = 8
 
-# Templates offered to a hosted run: the customer-agent family, plus the voice-oriented evals
-# numbered from 200. Karthik named 202 onwards; 200 and 201 are included because conversation
-# hallucination and dead air are as voice-relevant as the rest of that block.
+# The customer-agent family plus the voice evals numbered from 200.
 _OFFERED_NAME_PREFIX = "customer_agent"
 _OFFERED_FROM_EVAL_ID = 200
 
-# Evals in the offered set that only mean something on a spoken call. Dead air, voicemail
-# detection and voicemail handling have no analogue in a chat transcript.
+# These have no analogue in a chat transcript.
 _VOICE_ONLY_EVALS = frozenset(
     {
         "dead_air_detection",
@@ -57,17 +52,12 @@ _VOICE_ONLY_EVALS = frozenset(
     }
 )
 
-# Required key to the source alias the eval runner already resolves. Voice and chat differ in
-# one place only, and that place is the point of the split.
+# Required key to the source the eval runner resolves.
 _SOURCE_BY_KEY_VOICE = {
-    # The whole conversation as audio. `voice_recording` is the combined recording, which is
-    # what `assert_recording_slot_available` names as the correct whole-conversation source; a
-    # per-channel or stereo mapping resolves empty on combined-only providers.
+    # The combined recording; a per-channel mapping resolves empty on combined-only providers.
     "conversation": "voice_recording",
     # A single-output eval on a call is judging the same conversation.
     "output": "voice_recording",
-    # Both names mean the target agent's own instructions, resolved from the agent version's
-    # configuration snapshot.
     "agent_prompt": "agent_prompt",
     "system_prompt": "agent_prompt",
 }
@@ -158,10 +148,7 @@ class UnknownEvalSelection(Exception):
         super().__init__(", ".join(names))
 
 
-# An agent-type template names no model, and the evaluator's own default cannot consume audio, so a
-# bound recording arrives as a link and the eval reports being given no conversation at all. Measured:
-# the same eval added by hand with a model read the call and scored it properly, while every
-# harness-created one scored 0.0. Overridable per deployment, since this alias is licence-gated.
+# Agent templates name no model and the default cannot read audio. Overridable per deployment.
 FALLBACK_EVAL_MODEL = "turing_large"
 
 

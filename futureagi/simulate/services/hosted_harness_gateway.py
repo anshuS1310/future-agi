@@ -150,8 +150,7 @@ def _platform_simulator_material() -> tuple[dict[str, str], bytes | None]:
         "ALK_BACKGROUND_NOISE",
         "ALK_BACKGROUND_NOISE_CATALOG",
         "HARNESS_BACKGROUND_NOISE_VOLUME",
-        # Whether a run may write scenarios a mailbox answers. Off has to travel: the decision is
-        # made here and enforced inside the sandbox, where the scenarios are written.
+        # Off has to travel: decided here, enforced inside the sandbox.
         "ALK_VOICEMAIL_SCENARIOS",
     ):
         value = str(os.environ.get(name) or "").strip()
@@ -1241,8 +1240,7 @@ class DaytonaHostedGateway:
             attempts = max(
                 1, int(getattr(settings, "ALK_HOSTED_AUTHORING_ATTEMPTS", 3))
             )
-            # Settings owns this and derives it from the authoring budget, so an inline default
-            # cannot end a suite earlier than the budget allows.
+            # Settings derives this from the authoring budget.
             run_timeout = int(
                 getattr(settings, "ALK_HOSTED_AUTHORING_TIMEOUT", 0)
                 or int(
@@ -1602,8 +1600,7 @@ class DaytonaHostedGateway:
                     "ALK_HARNESS",
                     "ALK_HARNESS_MODEL",
                     "ALK_VERTEX_LOCATION",
-                    # Not a Vertex selector, but authoring is where scenarios are written, so the
-                    # switch that forbids mailbox scenarios has to be exported here as well.
+                    # Authoring writes the scenarios, so the switch is exported here too.
                     "ALK_VOICEMAIL_SCENARIOS",
                     "GOOGLE_APPLICATION_CREDENTIALS",
                     "GOOGLE_CLOUD_LOCATION",
@@ -2539,9 +2536,7 @@ def prepare_dispatch_payload(
     if job is not None:
         offered = _offered_eval_catalogue(job)
         if offered:
-            # Metadata is free-form on both sides, so the catalogue reaches the guest without a
-            # contract change. Offered, not required: a guest that ignores it selects nothing and
-            # the run behaves exactly as it does today.
+            # Offered, not required: a guest that ignores it selects nothing.
             metadata = dict(dispatched.get("metadata") or {})
             metadata["available_evals"] = offered
             dispatched["metadata"] = metadata
@@ -2556,9 +2551,7 @@ def _offered_eval_catalogue(job: Any) -> list[dict[str, Any]]:
         authored = _authored_modality(job)
         if authored:
             return offered_evals(job.organization, job.workspace, authored)
-        # A fresh run has no contract yet, so there is no modality to filter by: filtering on a
-        # guess offered a voice run only the text set, which the guest then refused wholesale. Offer
-        # both, one entry per name, marking a name both sets carry as `any` so the guest keeps it.
+        # No contract yet at launch, so offer both sets and mark a shared name `any`.
         by_name: dict[str, dict[str, Any]] = {}
         for modality in ("voice", "text"):
             for entry in offered_evals(job.organization, job.workspace, modality):

@@ -716,13 +716,11 @@ ALK_HOSTED_EGRESS_UNRESTRICTED = os.getenv(
 # Fresh hosted jobs perform contract, environment and scenario authoring before the call-runtime
 # budget begins. Keep that bounded work separate from the customer's maximum call duration;
 # otherwise Daytona expires a healthy sandbox midway through scenario authoring.
-# Three hours: enough for a two-hundred-scenario suite to write, review and top up, with room for a
-# refusing provider to be waited out. The default is the tested value so a deployment need not find it.
+# Three hours: what a two-hundred-scenario suite needs to write, review and top up.
 ALK_HOSTED_AUTHORING_MAX_DURATION_SECONDS = int(
     os.getenv("ALK_HOSTED_AUTHORING_MAX_DURATION_SECONDS", "10800")
 )
-# How long the authoring command itself may run. Derived from the budget above so the two cannot
-# disagree, with a margin for the sandbox to pack its result once the work is done.
+# Derived from the budget above so the two cannot disagree.
 ALK_HOSTED_AUTHORING_TIMEOUT = int(
     os.getenv("ALK_HOSTED_AUTHORING_TIMEOUT", "")
     or ALK_HOSTED_AUTHORING_MAX_DURATION_SECONDS + 300

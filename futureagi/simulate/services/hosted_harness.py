@@ -441,9 +441,7 @@ def _record_target_agent_facts(
     if prompt and agent_definition.description != prompt:
         agent_definition.description = prompt
         changed.append("description")
-    # What the job genuinely knows about the target, so the definition stops reading as an
-    # anonymous stub. `model` and `language` are deliberately left alone: the authored contract
-    # carries neither, and the simulated caller's model is not the agent's.
+    # model and language are left alone: the contract carries neither.
     connector = str((job.payload.get("agent") or {}).get("connector") or "").lower()
     if connector in {"livekit", "vapi", "retell"} and not agent_definition.provider:
         agent_definition.provider = connector

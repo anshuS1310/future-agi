@@ -624,9 +624,7 @@ def build_simulation_context_map(call_execution, agent_version):
         "duration_seconds": _s(call_execution.duration_seconds),
         "duration": _s(_detail_serializer.get_duration(call_execution)),
         "call_type": _s(_detail_serializer.get_call_type(call_execution)),
-        # Addressed so a server-side process can fetch it. A stored URL is browser-facing, and when
-        # that host is unreachable here `detect_single_item` sniffs it, fails, and silently classifies
-        # the URL as text: the judge is handed a link as its conversation and invents a call.
+        # Addressed for a server-side fetch; an unreachable URL is sniffed as text.
         "audio_url": _s(server_reachable_url(call_execution.recording_url or "")),
         "status": _s(call_execution.status),
         "simulation_call_type": _s(call_execution.simulation_call_type),

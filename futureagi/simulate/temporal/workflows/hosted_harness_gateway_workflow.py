@@ -32,9 +32,7 @@ class HostedHarnessGatewayWorkflow:
                 "launch_hosted_harness_job",
                 input,
                 task_queue=QUEUE_RUNNER,
-                # Launching includes building the sandbox image on a changed source tree, which can
-                # exceed twenty minutes cold. Too short a bound cancels the build and each retry
-                # restarts it, so the job never finishes one. Still well inside the attempt deadline.
+                # A cold image build can exceed twenty minutes; a short bound cancels and restarts it.
                 start_to_close_timeout=timedelta(minutes=45),
                 retry_policy=RetryPolicy(
                     maximum_attempts=input.max_infrastructure_attempts,

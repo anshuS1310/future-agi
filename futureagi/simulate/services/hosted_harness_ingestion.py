@@ -823,9 +823,7 @@ def _apply_receipt_to_call(
         transaction.on_commit(
             lambda: _dispatch_csat_once(CallExecution.objects.get(id=call_id))
         )
-        # A hosted receipt never travels the SDK result path that normally starts the evaluator, so
-        # without this the configs exist and nothing runs them. After commit, like CSAT, so the row
-        # a task reads is the row this receipt wrote.
+        # A hosted receipt never travels the SDK result path, so dispatch here, after commit.
         try:
             selected = (
                 runnable_eval_config_ids(run_test_id)
@@ -862,16 +860,12 @@ def _ensure_run_agent_is_voice(job: HostedHarnessJob) -> None:
     if agent.agent_type != AgentDefinition.AgentTypeChoices.VOICE:
         fields = ["agent_type", "updated_at"]
         agent.agent_type = AgentDefinition.AgentTypeChoices.VOICE
-        # The placeholder description was written from the same wrong modality. Only the
-        # generated placeholder is rewritten; a real agent prompt recorded at provision is never
-        # touched.
+        # Only the generated placeholder is rewritten, never a recorded prompt.
         if str(agent.description or "").startswith("SDK-provisioned text agent"):
             agent.description = "SDK-provisioned voice agent (ALK ingestion)."
             fields.insert(1, "description")
         agent.save(update_fields=fields)
-    # Rows pre-allocated before the promotion carry `call_channel: chat`, which sends a voice
-    # call through the chat schema in every reader that trusts it. Correcting the definition
-    # without correcting them leaves the two disagreeing for the life of the run.
+    # Pre-allocated rows carry call_channel chat, which reads a voice call as chat.
     stale = [
         call
         for call in CallExecution.no_workspace_objects.filter(

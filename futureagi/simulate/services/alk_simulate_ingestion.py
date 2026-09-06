@@ -744,12 +744,7 @@ def ingest_alk_sim_result(
         # null score.
         _dispatch_csat_once(call_execution)
         call_metadata = call_execution.call_metadata or {}
-        # Ordering for a hosted harness call, in one place: the call ends, this receipt lands, the
-        # row reaches COMPLETED, and only then are platform evals dispatched -- with exactly the
-        # config ids selected at scenario provision, so a harness result column (mapping {}) is
-        # never run as if it were an eval. Results attach to the call and roll up to the
-        # execution. The harness's own checkpoints are already on the row by this point and are
-        # not affected either way.
+        # Dispatched only once the row is COMPLETED, with the config ids chosen at provision.
         selected_eval_config_ids = _selected_eval_config_ids(call_execution)
         if "harness_evaluations" in call_metadata and not selected_eval_config_ids:
             # An ALK harness result already contains the execution-backed
@@ -855,8 +850,7 @@ def _roll_up_external_execution(test_execution_id) -> None:
         if calls.filter(status=CallExecution.CallStatus.COMPLETED).exists()
         else TestExecution.ExecutionStatus.FAILED
     )
-    # Transport, not verdicts: a call that connected and played is completed even when its scenario
-    # failed its checks. The scenario outcome is counted on the job as completed_count/failed_count.
+    # Transport, not verdicts; scenario outcomes are counted on the job.
     completed_calls = calls.filter(status=CallExecution.CallStatus.COMPLETED).count()
     failed_calls = calls.filter(
         status__in=(
@@ -1018,9 +1012,6 @@ def _build_call_execution(
             "dataset_id": row_data_info.get("dataset_id"),
             "base_prompt": base_prompt,
             "agent_description": agent_definition.description,
-            # The target agent's own instructions, under the name a reader looks for. Same text
-            # the eval mapping resolves through the agent version, kept here so the call detail
-            # can show it without a join.
             "agent_prompt": agent_definition.description,
             "dynamic_prompt": row_data_info.get("dynamic_prompt"),
             "language": "en",
@@ -1371,11 +1362,7 @@ def _apply_conversation_metrics(call_execution: CallExecution) -> None:
     ]
     full_user_count = full_metric_roles.count("user")
     full_bot_count = full_metric_roles.count("bot")
-    # Three different counts, and they are easy to read as one. `message_count` is every
-    # transcript message and is the number a harness receipt reports as its `turns`.
-    # `turn_count` counts the agent's messages only, which is what the platform has always
-    # meant by a turn. `agent_turn_count` states that plainly beside it so neither is mistaken
-    # for the receipt's figure.
+    # message_count is every message; turn_count and agent_turn_count are the agent's only.
     detailed_data.update(
         {
             "message_count": len(full_metric_roles),

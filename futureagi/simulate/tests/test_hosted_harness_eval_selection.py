@@ -253,8 +253,7 @@ def test_provision_falls_back_to_the_authored_contract_excerpt(
     job.refresh_from_db()
     agent = job.run_test.agent_definition
     assert agent.description == "Booked rides only."
-    # The base branch derives a human-readable name for the run and the agent, so the contract's
-    # snake_case value arrives title-cased. That derivation is theirs and wins.
+    # Base derives human-readable names, so the snake_case value arrives title-cased.
     assert agent.agent_name == "Uber Voice Agent"
     assert agent.inbound is True
 

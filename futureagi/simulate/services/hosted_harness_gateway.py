@@ -1241,8 +1241,8 @@ class DaytonaHostedGateway:
             attempts = max(
                 1, int(getattr(settings, "ALK_HOSTED_AUTHORING_ATTEMPTS", 3))
             )
-            # Settings owns this and derives it from the authoring budget. The old inline default
-            # was shorter than that budget, so it, not the budget, decided when a suite died.
+            # Settings owns this and derives it from the authoring budget, so an inline default
+            # cannot end a suite earlier than the budget allows.
             run_timeout = int(
                 getattr(settings, "ALK_HOSTED_AUTHORING_TIMEOUT", 0)
                 or int(

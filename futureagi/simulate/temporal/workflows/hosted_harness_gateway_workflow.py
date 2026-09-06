@@ -32,11 +32,9 @@ class HostedHarnessGatewayWorkflow:
                 "launch_hosted_harness_job",
                 input,
                 task_queue=QUEUE_RUNNER,
-                # Launching includes building the sandbox image when the source tree has changed,
-                # which measured over twenty minutes on a cold cache. At fifteen the activity was
-                # cancelled mid-build and retried, and each retry started a fresh build, so a job
-                # could sit in `queued` indefinitely while never finishing one. Still bounded, and
-                # well inside the attempt deadline the job carries.
+                # Launching includes building the sandbox image on a changed source tree, which can
+                # exceed twenty minutes cold. Too short a bound cancels the build and each retry
+                # restarts it, so the job never finishes one. Still well inside the attempt deadline.
                 start_to_close_timeout=timedelta(minutes=45),
                 retry_policy=RetryPolicy(
                     maximum_attempts=input.max_infrastructure_attempts,

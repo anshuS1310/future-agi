@@ -404,11 +404,7 @@ def provision_scenarios(
 
 
 def _target_agent_prompt(job: HostedHarnessJob, payload: dict[str, Any]) -> str:
-    """The target agent's instructions, from the guest or from the authored contract.
-
-    The contract excerpt is a fallback rather than the source of record: it is an excerpt, and a
-    guest that sends the real prompt should win.
-    """
+    """The target agent's instructions: the guest's own prompt, else the contract excerpt."""
     supplied = str(payload.get("agent_prompt") or "").strip()
     if supplied:
         return supplied

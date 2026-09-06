@@ -1,22 +1,8 @@
 """Platform evals a hosted harness run selects for itself.
 
-The guest never reaches the eval catalogue directly. The gateway offers a list in the ephemeral
-job document, the guest returns names only on the scenario provision call, and the platform owns
-the mapping. Deriving a mapping from a model's answer would let it bind a variable to a source
-that resolves empty, and an eval scoring an empty string returns a confident verdict about
-nothing, so the tables below are the only mappings this path can produce.
-
-Ordering, once, so it is not re-derived:
-
-1. scenario provision creates the ``RunTest`` and, from ``chosen_evals``, one
-   ``SimulateEvalConfig`` per selected template
-2. calls run, each receipt lands on its ``CallExecution``
-3. a row reaching ``COMPLETED`` dispatches the platform evaluator with exactly the config ids
-   from step 1 (``runnable_eval_config_ids``)
-4. results attach to the call and roll up to the ``TestExecution``
-
-The harness's own deterministic checkpoints are unaffected by all of this; they arrive on the
-receipt and are written straight onto the call.
+The guest returns eval names only; the mapping tables below are the sole mappings this path can
+produce, so a model cannot bind a variable to a source that resolves empty. The harness's own
+deterministic checkpoints do not come through here.
 """
 
 from __future__ import annotations
@@ -81,11 +67,7 @@ def _required_keys(template: EvalTemplate) -> list[str]:
 
 
 def _visible_templates(organization, workspace):
-    """Templates this organization may select, system-owned ones included.
-
-    Scoped the same way `_resolve_harness_eval_template` scopes its lookup: the organization's
-    own templates plus the system ones, never another tenant's.
-    """
+    """Templates this organization may select: its own plus system-owned, never another tenant's."""
     visible_scope = Q(organization=organization) | Q(organization__isnull=True)
     workspace_scope = Q(workspace=workspace) | Q(workspace__isnull=True)
     return EvalTemplate.no_workspace_objects.filter(
@@ -96,11 +78,7 @@ def _visible_templates(organization, workspace):
 def resolve_eval_mapping(
     template: EvalTemplate, modality: str
 ) -> dict[str, str] | None:
-    """The mapping for one template, or None when any required key has no source.
-
-    None is a refusal to run it. Returning a partial mapping would hand the evaluator an empty
-    variable, which is the failure this whole module exists to prevent.
-    """
+    """The mapping for one template, or None to refuse it when a required key has no source."""
     sources = _sources_for(modality)
     keys = _required_keys(template)
     if not keys:
@@ -155,15 +133,7 @@ FALLBACK_EVAL_MODEL = "turing_large"
 def create_selected_eval_configs(
     run_test: RunTest, chosen: list[str], modality: str
 ) -> list[SimulateEvalConfig]:
-    """Bind the guest's chosen eval names to this run, mapping them here rather than there.
-
-    Raises ``UnknownEvalSelection`` for a name outside the organization's visible templates: a
-    hosted guest can only have received names from ``offered_evals``, so an unknown one is a
-    real mismatch and must not resolve to some other tenant's template or be dropped quietly.
-
-    The config itself holds no organization column; it is scoped by the ``RunTest`` it points
-    at, which is why the template lookup is scoped to that run's organization and workspace.
-    """
+    """Bind the guest's chosen eval names to this run, raising on a name it could not have been offered."""
     wanted = [str(name).strip() for name in (chosen or []) if str(name).strip()]
     if not wanted:
         return []
@@ -221,12 +191,7 @@ def create_selected_eval_configs(
 
 
 def runnable_eval_config_ids(run_test_id) -> list[str]:
-    """Config ids on this run that the platform evaluator can actually execute.
-
-    A non-empty mapping is what separates a selected eval from a harness result column: the
-    columns created for harness-computed judgements carry ``mapping: {}`` deliberately, and
-    running one would feed the evaluator nothing.
-    """
+    """Config ids the evaluator can run: a harness result column carries an empty mapping."""
     return [
         str(config_id)
         for config_id, mapping in SimulateEvalConfig.objects.filter(

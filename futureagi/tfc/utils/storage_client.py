@@ -95,11 +95,8 @@ def get_object_url(bucket_name: str, object_key: str) -> str:
 def server_reachable_url(file_url: str) -> str:
     """The same object, addressed the way a process inside the deployment can reach it.
 
-    ``get_object_url`` builds a browser-facing URL, and on the self-hosted stack that is
-    ``MINIO_URL``, typically ``http://localhost:9005``. Inside a container ``localhost`` is the
-    container, so anything server side that fetches a stored object by its recorded URL gets a
-    refused connection: an eval reading a call recording sees no audio and reports as though the call
-    had none. S3 and GCS URLs are globally resolvable, so they are returned unchanged.
+    A stored MinIO URL names the browser host, which is not resolvable server side; S3 and GCS
+    URLs already are, so they come back unchanged.
     """
     if STORAGE_BACKEND != "minio":
         return file_url

@@ -944,12 +944,7 @@ def _call_execution_key(call_execution: CallExecution) -> tuple[str, str | None]
 
 
 def _simulator_llm_model() -> str:
-    """The model the simulated caller actually runs on.
-
-    The gateway ships `SIMULATOR_LLM_MODEL` into every hosted sandbox, so recording anything else
-    here makes the stored simulator disagree with the one that spoke. The old constant is kept as
-    the fallback for a deployment that configures nothing.
-    """
+    """The model the simulated caller runs on, so the stored value matches the one that spoke."""
     import os
 
     return str(os.environ.get("SIMULATOR_LLM_MODEL") or "gpt-4").strip()

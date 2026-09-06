@@ -178,13 +178,7 @@ def _set_csat_state(
     status: str,
     error: str = "",
 ) -> None:
-    """Record where CSAT reached, without reverting what another writer put there meanwhile.
-
-    Saving ``call_metadata`` writes the whole column, and this task can be minutes old by the time it
-    reports: the evaluation flags land inside that window, so a copy taken at task start silently
-    undoes them. Measured: the worker logged "All evaluations completed" for calls whose
-    ``eval_completed`` was then absent, while ``eval_started``, written earlier, survived.
-    """
+    """Record where CSAT reached, re-reading the row so a stale copy cannot revert the eval flags."""
     with transaction.atomic():
         locked = CallExecution.objects.select_for_update().get(id=call.id)
         metadata = dict(locked.call_metadata or {})

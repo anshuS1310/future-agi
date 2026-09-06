@@ -19,6 +19,7 @@ from django.db import close_old_connections, transaction
 from simulate.constants.csat_score_prompt import CSAT_SCORE_PROMPT
 from simulate.models import CallExecution
 from tfc.temporal.drop_in import temporal_activity
+from tfc.utils.storage_client import server_reachable_url
 
 logger = structlog.get_logger(__name__)
 
@@ -89,7 +90,8 @@ def _score_from_recording(call: CallExecution) -> float | None:
     """
     if not call.recording_url:
         return None
-    score = _run_agent_csat(call.recording_url)
+    # Addressed for a server-side fetch; an unreachable URL is sniffed as text and scored as a link.
+    score = _run_agent_csat(server_reachable_url(call.recording_url))
     if score is None:
         logger.warning("alk_csat_recording_failed", call_execution_id=str(call.id))
     return score

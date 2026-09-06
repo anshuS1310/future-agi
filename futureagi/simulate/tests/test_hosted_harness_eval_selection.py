@@ -294,3 +294,53 @@ def test_provision_rejects_an_eval_name_it_never_offered(organization, workspace
     )
     assert response.status_code == 400, response.content
     assert response.json()["error"] == "eval_selection_unknown"
+
+
+def test_a_fresh_run_is_offered_both_modalities(db, django_assert_num_queries=None):
+    """At launch there is no contract, so filtering on a guess is what broke a voice run.
+
+    The catalogue was filtered to the modality read off `stage_outputs`, which is empty on a fresh
+    run because authoring happens inside the sandbox afterwards. It defaulted to text, so a voice
+    run was offered only text entries and the guest refused every one of them as cross-modality,
+    leaving `chosen_evals` empty. Measured on run 57baa0fe: 20 entries, all marked text, on a voice
+    run.
+    """
+    from simulate.services.hosted_harness_gateway import _authored_modality
+
+    class _Job:
+        stage_outputs: list = []
+
+    assert _authored_modality(_Job()) == "", "absence must not read as text"
+
+    authored = _Job()
+    authored.stage_outputs = [{"kind": "contract", "data": {"modality": "voice"}}]
+    assert _authored_modality(authored) == "voice"
+
+
+def test_a_fresh_run_offers_each_name_once(db):
+    """Two entries for one name made the guest refuse the model's correct choices.
+
+    Measured on run a5ffa58d, whose guest log reads "chosen_evals names evals belonging to another
+    modality than 'voice'": the catalogue offered every name twice, once per modality, the guest
+    kept whichever it read last, and a correct voice choice was rejected. A name both sets offer is
+    marked `any`, which the guest accepts for either modality; a name only one set offers keeps it.
+    """
+    from collections import Counter
+
+    from simulate.services.hosted_harness_gateway import _offered_eval_catalogue
+
+    class _Job:
+        stage_outputs: list = []
+        organization = None
+        workspace = None
+        id = "00000000-0000-0000-0000-000000000000"
+
+    offered = _offered_eval_catalogue(_Job())
+    names = Counter(str(entry.get("name")) for entry in offered)
+    assert not [name for name, count in names.items() if count > 1], "a name must appear once"
+    voice_only = {"dead_air_detection", "voice_mail_detection", "voicemail_handling"}
+    for entry in offered:
+        if str(entry.get("name")) in voice_only:
+            assert entry.get("modality") == "voice"
+        else:
+            assert entry.get("modality") in ("any", "voice", "text")

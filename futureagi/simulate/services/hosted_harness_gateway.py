@@ -150,6 +150,9 @@ def _platform_simulator_material() -> tuple[dict[str, str], bytes | None]:
         "ALK_BACKGROUND_NOISE",
         "ALK_BACKGROUND_NOISE_CATALOG",
         "HARNESS_BACKGROUND_NOISE_VOLUME",
+        # Whether a run may write scenarios a mailbox answers. Off has to travel: the decision is
+        # made here and enforced inside the sandbox, where the scenarios are written.
+        "ALK_VOICEMAIL_SCENARIOS",
     ):
         value = str(os.environ.get(name) or "").strip()
         if value:
@@ -1581,6 +1584,9 @@ class DaytonaHostedGateway:
                     "ALK_HARNESS",
                     "ALK_HARNESS_MODEL",
                     "ALK_VERTEX_LOCATION",
+                    # Not a Vertex selector, but authoring is where scenarios are written, so the
+                    # switch that forbids mailbox scenarios has to be exported here as well.
+                    "ALK_VOICEMAIL_SCENARIOS",
                     "GOOGLE_APPLICATION_CREDENTIALS",
                     "GOOGLE_CLOUD_LOCATION",
                     "GOOGLE_CLOUD_PROJECT",
@@ -2528,15 +2534,39 @@ def _offered_eval_catalogue(job: Any) -> list[dict[str, Any]]:
     from simulate.services.harness_evals import offered_evals
 
     try:
-        modality = _authored_modality(job)
-        return offered_evals(job.organization, job.workspace, modality)
+        authored = _authored_modality(job)
+        if authored:
+            return offered_evals(job.organization, job.workspace, authored)
+        # A fresh run has no contract at launch, because authoring happens inside the sandbox
+        # afterwards, so there is no modality to filter by yet. Offer both sets, each entry marked
+        # with the modality it belongs to, and let the guest keep the ones matching the modality it
+        # goes on to record. Filtering here on a guess produced a voice run offered only the text
+        # set, whose every entry the guest then refused as cross-modality.
+        # One entry per name, never two. Offering the same name once per modality made the guest
+        # keep whichever it saw last and refuse the model's correct choices as cross-modality:
+        # measured on run a5ffa58d, "chosen_evals names evals belonging to another modality than
+        # 'voice'". A name that both sets offer is marked `any`, which the guest already accepts,
+        # and a name only one set offers keeps that modality so the voice-only evals stay voice-only.
+        by_name: dict[str, dict[str, Any]] = {}
+        for modality in ("voice", "text"):
+            for entry in offered_evals(job.organization, job.workspace, modality):
+                name = str(entry.get("name"))
+                if name in by_name:
+                    by_name[name] = {**by_name[name], "modality": "any"}
+                    continue
+                by_name[name] = dict(entry)
+        return list(by_name.values())
     except Exception:  # noqa: BLE001 - a catalogue is an offer; never fail a launch over it
         logger.exception("harness_eval_catalogue_failed", job_id=str(job.id))
         return []
 
 
 def _authored_modality(job: Any) -> str:
-    """Voice or text, from the authored contract, defaulting to text like provisioning does."""
+    """Voice or text where a contract has been authored, empty where none exists yet.
+
+    Empty is the ordinary case at launch on a fresh run and must stay distinguishable from a
+    contract that really says text, or a voice run is filtered down to the wrong catalogue.
+    """
     for output in job.stage_outputs or []:
         if not isinstance(output, dict) or output.get("kind") != "contract":
             continue
@@ -2545,7 +2575,7 @@ def _authored_modality(job: Any) -> str:
             authored = str(data.get("modality") or "").lower()
             if authored in {"text", "voice"}:
                 return authored
-    return "text"
+    return ""
 
 
 def _secret_safe(value: Any, *, key: str = "") -> Any:

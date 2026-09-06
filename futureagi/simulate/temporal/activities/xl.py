@@ -632,17 +632,13 @@ def build_simulation_context_map(call_execution, agent_version):
         "duration_seconds": _s(call_execution.duration_seconds),
         "duration": _s(_detail_serializer.get_duration(call_execution)),
         "call_type": _s(_detail_serializer.get_call_type(call_execution)),
-        # Reachable from this process, not from a browser. An eval bound to a recording that cannot
-        # be fetched does not abstain: the judge invents a conversation and scores it.
-        "audio_url": _s(server_reachable_url(call_execution.recording_url or "")),
+        "audio_url": _s(call_execution.recording_url),
         "status": _s(call_execution.status),
         "simulation_call_type": _s(call_execution.simulation_call_type),
         "phone_number": _s(call_execution.phone_number),
         "overall_score": _s(call_execution.overall_score),
-        "recording_url": _s(server_reachable_url(call_execution.recording_url or "")),
-        "stereo_recording_url": _s(
-            server_reachable_url(call_execution.stereo_recording_url or "")
-        ),
+        "recording_url": _s(call_execution.recording_url),
+        "stereo_recording_url": _s(call_execution.stereo_recording_url),
         "response_time": _s(response_time_seconds),
         "response_time_ms": _s(rtm),
         "avg_agent_latency": _s(agent_latency_ms),

@@ -22,7 +22,6 @@ from agentic_eval.core_evals.fi_utils.logging import logger
 from agentic_eval.core_evals.fi_utils.utils import PreserveUndefined
 from agentic_eval.core_evals.keys.openai_api import OpenAiApiKey
 from agentic_eval.core_evals.llm_services.openai_api import OpenAiService
-from tfc.utils.storage_client import server_reachable_url
 
 
 def _standardize_url(url):
@@ -1334,7 +1333,7 @@ def contains_valid_link(text, **kwargs):
         if matched_url:
             standardized_url = _standardize_url(matched_url)
             try:
-                text = requests.head(server_reachable_url(standardized_url))
+                text = requests.head(standardized_url)
                 if text.status_code == 200:
                     return {
                         "result": True,
@@ -1370,7 +1369,7 @@ def no_invalid_links(text, **kwargs):
         if matched_url:
             standardized_url = _standardize_url(matched_url)
             try:
-                text = requests.head(server_reachable_url(standardized_url))
+                text = requests.head(standardized_url)
                 if text.status_code == 200:
                     return {
                         "result": True,

@@ -11,8 +11,6 @@ import mimetypes
 import structlog
 from typing import Optional
 from urllib.request import urlopen
-
-from tfc.utils.storage_client import server_reachable_url
 from urllib.error import URLError
 
 logger = structlog.get_logger(__name__)
@@ -116,7 +114,7 @@ def _extract_pdf_text(url: str, max_chars: int = 10000) -> Optional[str]:
     """Extract text from a PDF URL."""
     try:
         import io
-        response = urlopen(server_reachable_url(url), timeout=15)
+        response = urlopen(url, timeout=15)
         pdf_bytes = response.read()
 
         # Try PyPDF2/pypdf
@@ -151,7 +149,7 @@ def _extract_pdf_text(url: str, max_chars: int = 10000) -> Optional[str]:
 def _fetch_text_content(url: str, max_chars: int = 10000) -> Optional[str]:
     """Fetch plain text content from a URL."""
     try:
-        response = urlopen(server_reachable_url(url), timeout=15)
+        response = urlopen(url, timeout=15)
         content = response.read().decode("utf-8", errors="ignore")
         return content[:max_chars] if content.strip() else None
     except Exception as e:

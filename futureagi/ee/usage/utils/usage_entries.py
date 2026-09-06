@@ -9,8 +9,6 @@ from math import ceil
 from typing import Optional  # Import ceil to use for rounding up
 
 import av
-
-from tfc.utils.storage_client import server_reachable_url
 import requests
 import structlog
 import tiktoken
@@ -2544,11 +2542,7 @@ def check_if_kb_creation_is_allowed(organization):
 
 def process_audio(value):
     if isinstance(value, str) and value.startswith(("http://", "https://")):
-        # A stored URL is built for a browser, and on the self-hosted stack that names localhost,
-        # which inside this process is this container. PyAV opens the address it is given, so without
-        # this the duration of a call recording cannot be read and the eval that needed the audio
-        # fails with nothing to say.
-        container_source = server_reachable_url(value)
+        container_source = value
     else:
         if isinstance(value, (bytes, bytearray)):
             audio_bytes = bytes(value)

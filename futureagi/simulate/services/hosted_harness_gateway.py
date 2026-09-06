@@ -561,6 +561,21 @@ def _normalize_egress_domains(domains: Iterable[str]) -> set[str]:
     }
 
 
+_PRE_RUNTIME_STAGES = frozenset({"queued", "admitted", "acquiring_source", "understanding_agent"})
+
+
+def _mark_stage(job: HostedHarnessJob, stage: str) -> None:
+    """Advance ``current_stage`` through the platform-side steps that precede guest events.
+
+    The guest owns the stage once its event channel starts, so this only moves forward
+    while the job is still in a pre-runtime stage; it never regresses a guest-reported one.
+    """
+    if job.current_stage == stage or job.current_stage not in _PRE_RUNTIME_STAGES:
+        return
+    job.current_stage = stage
+    job.save(update_fields=["current_stage", "updated_at"])
+
+
 def _hostname_from_url(value: Any) -> str | None:
     """Extract a normalized hostname from an URL or host-like value."""
     if not isinstance(value, str):
@@ -1063,6 +1078,7 @@ class DaytonaHostedGateway:
             Resources,
         )
 
+        _mark_stage(job, "acquiring_source")
         source_archive, commit_sha = HostedSourceAcquirer().acquire(job)
         payload = dict(job.payload)
         source = dict(payload["source"])
@@ -1186,6 +1202,7 @@ class DaytonaHostedGateway:
                     **common_params,
                 )
                 launch_timeout = 300
+            _mark_stage(job, "understanding_agent")
             sandbox = self.client.create(launch_params, timeout=launch_timeout)
             sandbox.fs.upload_file(source_archive, "/work/source.tar.gz")
             sandbox.fs.upload_file(
@@ -1364,6 +1381,7 @@ class DaytonaHostedGateway:
             SessionExecuteRequest,
         )
 
+        _mark_stage(job, "acquiring_source")
         source_archive, commit_sha = HostedSourceAcquirer().acquire(job)
         authoring_archive = _authoring_archive_for(job)
         payload = dict(job.payload)
@@ -1927,6 +1945,7 @@ class DaytonaHostedGateway:
         if job.current_stage in {
             "queued",
             "admitted",
+            "acquiring_source",
             "understanding_agent",
             "generating_environment",
             "generating_scenarios",

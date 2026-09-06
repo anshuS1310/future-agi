@@ -37,17 +37,25 @@ def test_the_total_and_its_stages_land_on_the_job():
         },
     )
 
-    assert _spend(job) == {
-        "total_usd": 0.8123,
-        "unpriced_turns": 2,
-        "stages": [{"stage": "understand-agent", "usd": 0.8123, "turns": 9}],
-    }
+    assert _spend(job)["total_usd"] == 0.8123
+    assert _spend(job)["unpriced_turns"] == 2
+    assert _spend(job)["attempts"]["1"]["stages"] == [
+        {"stage": "understand-agent", "usd": 0.8123, "turns": 9}
+    ]
     assert job.saved
 
 
 def test_a_later_read_never_lowers_the_bill():
     """A half-written or reset ledger must not erase what a previous poll already saw."""
-    job = _job({"harness_spend": {"total_usd": 1.5, "unpriced_turns": 0, "stages": []}})
+    job = _job(
+        {
+            "harness_spend": {
+                "total_usd": 1.5,
+                "unpriced_turns": 0,
+                "attempts": {"1": {"total_usd": 1.5, "unpriced_turns": 0, "stages": []}},
+            }
+        }
+    )
     _record_harness_spend(job, {"total_usd": 0.2, "stages": []})
 
     assert _spend(job)["total_usd"] == 1.5
@@ -55,7 +63,15 @@ def test_a_later_read_never_lowers_the_bill():
 
 
 def test_a_growing_total_replaces_the_earlier_one():
-    job = _job({"harness_spend": {"total_usd": 0.5, "unpriced_turns": 0, "stages": []}})
+    job = _job(
+        {
+            "harness_spend": {
+                "total_usd": 0.5,
+                "unpriced_turns": 0,
+                "attempts": {"1": {"total_usd": 0.5, "unpriced_turns": 0, "stages": []}},
+            }
+        }
+    )
     _record_harness_spend(job, {"total_usd": 0.9, "stages": [{"stage": "x", "usd": 0.9}]})
 
     assert _spend(job)["total_usd"] == 0.9
@@ -89,6 +105,7 @@ def test_a_dying_sandbox_is_read_before_it_is_deleted(monkeypatch):
     class _Attempt:
         id = "attempt-1"
         job_id = "job-1"
+        attempt_number = 1
 
     monkeypatch.setattr(
         gateway.HostedHarnessJob.no_workspace_objects, "get", lambda **_: job
@@ -113,5 +130,30 @@ def test_a_sandbox_that_cannot_be_read_never_blocks_its_own_deletion(monkeypatch
     class _Attempt:
         id = "attempt-2"
         job_id = "job-2"
+        attempt_number = 1
 
     gateway._read_harness_spend(_Attempt(), _Sandbox())
+
+
+def test_a_retry_adds_to_the_bill_instead_of_replacing_it():
+    """A retry runs in a NEW sandbox whose ledger starts at zero, so attempts must be summed."""
+    job = _job()
+    _record_harness_spend(job, {"total_usd": 1.2, "unpriced_turns": 1, "stages": []}, 1)
+    _record_harness_spend(job, {"total_usd": 0.8, "unpriced_turns": 0, "stages": []}, 2)
+
+    spend = _spend(job)
+    assert spend["total_usd"] == 2.0
+    assert spend["unpriced_turns"] == 1
+    assert sorted(spend["attempts"]) == ["1", "2"]
+
+
+def test_one_attempt_growing_does_not_disturb_another():
+    job = _job()
+    _record_harness_spend(job, {"total_usd": 1.0, "stages": []}, 1)
+    _record_harness_spend(job, {"total_usd": 0.3, "stages": []}, 2)
+    _record_harness_spend(job, {"total_usd": 0.9, "stages": []}, 2)
+
+    spend = _spend(job)
+    assert spend["attempts"]["1"]["total_usd"] == 1.0
+    assert spend["attempts"]["2"]["total_usd"] == 0.9
+    assert spend["total_usd"] == 1.9

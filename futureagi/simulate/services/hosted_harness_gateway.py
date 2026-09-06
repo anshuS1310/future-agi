@@ -1886,7 +1886,7 @@ class DaytonaHostedGateway:
         # leaves the last known total on the job rather than taking the whole bill with it.
         spend = _json("/work/authoring/cost.json")
         job = HostedHarnessJob.no_workspace_objects.get(id=attempt.job_id)
-        _record_harness_spend(job, spend)
+        _record_harness_spend(job, spend, attempt.attempt_number)
 
         # Unified hosted execution authors the contract/world/scenarios in the same
         # sandbox that later runs the calls.  Freeze those inputs as soon as Bundle V2
@@ -2591,17 +2591,20 @@ def _read_harness_spend(attempt: HostedHarnessAttempt, sandbox) -> None:
     try:
         body = sandbox.fs.download_file("/work/authoring/cost.json").decode("utf-8")
         job = HostedHarnessJob.no_workspace_objects.get(id=attempt.job_id)
-        _record_harness_spend(job, json.loads(body))
+        _record_harness_spend(job, json.loads(body), attempt.attempt_number)
     except Exception:  # noqa: BLE001 - no ledger is the ordinary case for an early failure
         logger.debug("no harness ledger to read attempt=%s", attempt.id)
 
 
-def _record_harness_spend(job: HostedHarnessJob, spend: Any) -> None:
-    """Keep the harness's own running cost on the job, growing only.
+def _record_harness_spend(
+    job: HostedHarnessJob, spend: Any, attempt_number: int = 1
+) -> None:
+    """Keep the harness's own cost on the job, per attempt, and total across attempts.
 
-    The guest rewrites its ledger after every turn and this runs on every poll, so the total is
-    whatever the last successful read saw: a sandbox that dies takes at most its final turn. Never
-    lowered, because a later poll that reads a half-written or reset file must not erase a bill.
+    Kept per attempt because a retry runs in a NEW sandbox whose ledger starts at zero: one
+    growing-only total would hold the largest attempt rather than the bill, and every retried run
+    would be under-charged. Within an attempt the figure only grows, so a half-written or reset
+    ledger cannot erase what an earlier poll already saw.
     """
     if not isinstance(spend, dict):
         return
@@ -2612,16 +2615,24 @@ def _record_harness_spend(job: HostedHarnessJob, spend: Any) -> None:
     payload = dict(job.payload or {})
     metadata = dict(payload.get("metadata") or {})
     recorded = metadata.get("harness_spend")
-    if isinstance(recorded, dict):
+    attempts = dict((recorded or {}).get("attempts") or {}) if isinstance(recorded, dict) else {}
+    key = str(int(attempt_number or 1))
+    mine = attempts.get(key)
+    if isinstance(mine, dict):
         try:
-            if float(recorded.get("total_usd") or 0.0) > total:
+            if float(mine.get("total_usd") or 0.0) > total:
                 return
         except (TypeError, ValueError):
             pass
-    metadata["harness_spend"] = {
+    attempts[key] = {
         "total_usd": round(total, 6),
         "unpriced_turns": int(spend.get("unpriced_turns") or 0),
         "stages": spend.get("stages") or [],
+    }
+    metadata["harness_spend"] = {
+        "total_usd": round(sum(float(one.get("total_usd") or 0.0) for one in attempts.values()), 6),
+        "unpriced_turns": sum(int(one.get("unpriced_turns") or 0) for one in attempts.values()),
+        "attempts": attempts,
     }
     payload["metadata"] = metadata
     job.payload = payload

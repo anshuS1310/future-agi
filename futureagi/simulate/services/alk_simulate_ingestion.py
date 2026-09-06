@@ -855,20 +855,18 @@ def _roll_up_external_execution(test_execution_id) -> None:
         if calls.filter(status=CallExecution.CallStatus.COMPLETED).exists()
         else TestExecution.ExecutionStatus.FAILED
     )
-    # A hosted harness call keeps transport status COMPLETED even when its scenario failed, so
-    # counting only transport failures reported a clean run while two of three scenarios had
-    # failed. The outcome lives in `harness_outcome_status`. Completed and failed stay a
-    # partition of the terminal calls so the two never sum past the total.
-    unsuccessful = {
-        call.id
-        for call in calls
-        if call.status
-        in (CallExecution.CallStatus.FAILED, CallExecution.CallStatus.CANCELLED)
-        or str((call.call_metadata or {}).get("harness_outcome_status") or "")
-        in ("failed", "errored")
-    }
-    failed_calls = len(unsuccessful)
-    completed_calls = calls.exclude(id__in=unsuccessful).count()
+    # These two count transport, not verdicts: a call that connected and played is a completed
+    # call even when its scenario failed its checks. The scenario outcome is counted separately on
+    # the job, as `completed_count` and `failed_count`, which is what a harness run is read by.
+    # Measured on run 57baa0fe: ten calls all connected, eight scenarios failed, and both
+    # statements are true at once.
+    completed_calls = calls.filter(status=CallExecution.CallStatus.COMPLETED).count()
+    failed_calls = calls.filter(
+        status__in=(
+            CallExecution.CallStatus.FAILED,
+            CallExecution.CallStatus.CANCELLED,
+        )
+    ).count()
     TestExecution.objects.filter(id=test_execution_id).update(
         status=status,
         completed_at=timezone.now(),

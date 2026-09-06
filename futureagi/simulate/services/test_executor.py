@@ -4667,7 +4667,7 @@ class TestExecutor:
                         call_execution.stereo_recording_url = s3_url
                         needs_save = True
                         fields_to_update.append("stereo_recording_url")
-                    transcript_data["stereo_recording"] = s3_url
+                    transcript_data["stereo_recording"] = server_reachable_url(s3_url)
                     recording_object["stereo"] = s3_url
 
                 # Convert and save main recording URL (combined)
@@ -4684,7 +4684,7 @@ class TestExecutor:
                         call_execution.recording_url = s3_url
                         needs_save = True
                         fields_to_update.append("recording_url")
-                    transcript_data["voice_recording"] = s3_url
+                    transcript_data["voice_recording"] = server_reachable_url(s3_url)
                     recording_object["combined"] = s3_url
 
             # Save the call_execution if any URLs were converted

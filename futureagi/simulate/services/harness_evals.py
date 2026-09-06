@@ -25,6 +25,7 @@ import uuid
 from typing import Any
 
 import structlog
+from django.conf import settings
 from django.db.models import Q
 
 from model_hub.models.evals_metric import EvalTemplate
@@ -157,6 +158,13 @@ class UnknownEvalSelection(Exception):
         super().__init__(", ".join(names))
 
 
+# An agent-type template names no model, and the evaluator's own default cannot consume audio, so a
+# bound recording arrives as a link and the eval reports being given no conversation at all. Measured:
+# the same eval added by hand with a model read the call and scored it properly, while every
+# harness-created one scored 0.0. Overridable per deployment, since this alias is licence-gated.
+FALLBACK_EVAL_MODEL = "turing_large"
+
+
 def create_selected_eval_configs(
     run_test: RunTest, chosen: list[str], modality: str
 ) -> list[SimulateEvalConfig]:
@@ -210,7 +218,7 @@ def create_selected_eval_configs(
                 "mapping": mapping,
                 "run_test": run_test,
                 "filters": {},
-                "model": template.model,
+                "model": template.model or getattr(settings, "HARNESS_EVAL_MODEL", FALLBACK_EVAL_MODEL),
             },
         )
         configs.append(config)

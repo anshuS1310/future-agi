@@ -253,7 +253,9 @@ def test_provision_falls_back_to_the_authored_contract_excerpt(
     job.refresh_from_db()
     agent = job.run_test.agent_definition
     assert agent.description == "Booked rides only."
-    assert agent.agent_name == "uber_voice_agent"
+    # The base branch derives a human-readable name for the run and the agent, so the contract's
+    # snake_case value arrives title-cased. That derivation is theirs and wins.
+    assert agent.agent_name == "Uber Voice Agent"
     assert agent.inbound is True
 
 
@@ -344,3 +346,31 @@ def test_a_fresh_run_offers_each_name_once(db):
             assert entry.get("modality") == "voice"
         else:
             assert entry.get("modality") in ("any", "voice", "text")
+
+
+@pytest.mark.django_db
+def test_a_template_with_no_model_still_gets_one(organization, workspace):
+    """Agent-type templates name no model, and the evaluator's default cannot consume audio, so a bound
+    recording reached the judge as a link and every harness-created eval scored 0.0. The same eval added
+    by hand, with a model, read the call and scored it."""
+    from simulate.services.alk_simulate_ingestion import provision_alk_sim_run_test
+    from simulate.services.harness_evals import FALLBACK_EVAL_MODEL
+
+    _template(
+        "customer_agent_objection_handling",
+        ["conversation"],
+        organization=organization,
+        workspace=workspace,
+    )
+    run_test, _scenarios, _agent = provision_alk_sim_run_test(
+        organization,
+        workspace=workspace,
+        name="fallback-model",
+        personas=[{"name": "Customer", "situation": "Objects", "outcome": "Handled"}],
+        modality="voice",
+    )
+    configs = create_selected_eval_configs(
+        run_test, ["customer_agent_objection_handling"], "voice"
+    )
+    assert configs, "the template is mappable, so it must produce a config"
+    assert configs[0].model == FALLBACK_EVAL_MODEL

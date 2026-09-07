@@ -15,6 +15,7 @@ from simulate.serializers.harness_job import (
     HarnessJobActionSerializer,
     HarnessJobAdjustmentSerializer,
     HarnessJobCreateSerializer,
+    HarnessJobExtendSerializer,
     HarnessJobReadSerializer,
     HarnessPreflightSerializer,
     HarnessSecretFileUploadResponseSerializer,
@@ -263,6 +264,14 @@ class HarnessJobViewSet(viewsets.ViewSet):
     @action(detail=True, methods=["post"])
     def adjust(self, request, pk=None):
         return get_harness_provider().adjust(request, pk)
+
+    @validated_request(
+        request_serializer=HarnessJobExtendSerializer,
+        reject_unknown_fields=True,
+    )
+    @action(detail=True, methods=["post"])
+    def extend(self, request, pk=None):
+        return get_harness_provider().extend(request, pk)
 
     @action(detail=False, methods=["get"])
     def health(self, request):

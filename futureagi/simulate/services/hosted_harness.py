@@ -22,6 +22,7 @@ from simulate.models import (
 )
 from simulate.services.alk_simulate_ingestion import (
     ALKSimulateIngestionError,
+    append_alk_sim_scenarios,
     create_alk_sim_call_execution_batch,
     create_alk_sim_test_execution,
     provision_alk_sim_run_test,
@@ -330,13 +331,41 @@ def provision_scenarios(
                 "created_at"
             )
         )
+        existing_keys = [item.scenario_key for item in registrations]
+        existing_set = set(existing_keys)
         requested_keys = [persona["scenario_key"] for persona in payload["personas"]]
-        if requested_keys != [item.scenario_key for item in registrations]:
+        requested_set = set(requested_keys)
+        if requested_set == existing_set:
+            return _provision_response(job, registrations)
+        # A chat "add scenarios" follow-up seals the existing set PLUS new personas. Dropping
+        # an existing scenario is a real conflict, not an extension.
+        if not existing_set.issubset(requested_set):
             raise HostedHarnessError(
                 "scenario_registration_conflict",
                 "the job already has a different sealed scenario registration",
                 status_code=409,
             )
+        new_personas = [
+            persona
+            for persona in payload["personas"]
+            if persona["scenario_key"] not in existing_set
+        ]
+        new_scenarios = append_alk_sim_scenarios(
+            job.run_test,
+            [
+                {key: value for key, value in persona.items() if key != "scenario_key"}
+                for persona in new_personas
+            ],
+        )
+        with transaction.atomic():
+            for persona, scenario in zip(new_personas, new_scenarios, strict=True):
+                registrations.append(
+                    HostedHarnessScenario.no_workspace_objects.create(
+                        job=job,
+                        scenario_key=persona["scenario_key"],
+                        scenario=scenario,
+                    )
+                )
         return _provision_response(job, registrations)
 
     personas = [
@@ -528,6 +557,49 @@ def begin_scenarios(
             status_code=409,
         )
     if job.test_execution_id:
+        unlinked = [item for item in registrations if item.call_execution_id is None]
+        if not unlinked:
+            return _begin_response(job, registrations)
+        # A chat "add scenarios" follow-up appends the new personas' calls to the existing
+        # execution: extend its scenario set, create only the missing calls (the batch is
+        # idempotent + additive), and link the new registrations. Existing calls stay.
+        with transaction.atomic():
+            execution = TestExecution.no_workspace_objects.select_for_update().get(
+                id=job.test_execution_id
+            )
+            existing_ids = [str(sid) for sid in (execution.scenario_ids or [])]
+            existing_id_set = set(existing_ids)
+            added_ids = [
+                str(item.scenario_id)
+                for item in unlinked
+                if str(item.scenario_id) not in existing_id_set
+            ]
+            if added_ids:
+                execution.scenario_ids = existing_ids + added_ids
+                execution.total_scenarios = len(execution.scenario_ids)
+                execution.save(update_fields=["scenario_ids", "total_scenarios"])
+        try:
+            batch = create_alk_sim_call_execution_batch(execution, count=len(unlinked))
+        except ALKSimulateIngestionError as exc:
+            raise HostedHarnessError("scenario_begin_failed", str(exc)) from exc
+        added_calls = CallExecution.no_workspace_objects.filter(
+            id__in=batch.call_execution_ids
+        ).select_related("scenario")
+        calls_by_scenario: dict[uuid.UUID, CallExecution] = {}
+        for call in added_calls:
+            calls_by_scenario.setdefault(call.scenario_id, call)
+        with transaction.atomic():
+            for item in unlinked:
+                call = calls_by_scenario.get(item.scenario_id)
+                if call is None:
+                    raise HostedHarnessError(
+                        "scenario_call_mapping_incomplete",
+                        "extension pre-allocation did not create a call for a new scenario",
+                        status_code=500,
+                        retryable=True,
+                    )
+                item.call_execution = call
+                item.save(update_fields=["call_execution", "updated_at"])
         return _begin_response(job, registrations)
 
     test_execution = create_alk_sim_test_execution(

@@ -318,8 +318,6 @@ def provision_alk_sim_run_test(
     """
     from django.db import transaction
 
-    from model_hub.models.choices import StatusType
-
     with transaction.atomic():
         if scenario_ids:
             scenarios = list(
@@ -377,39 +375,9 @@ def provision_alk_sim_run_test(
             workspace,
         )
 
-        scenarios: list[Scenarios] = []
-        for idx, persona in enumerate(personas):
-            persona = dict(persona or {})
-            persona_name = (persona.get("name") or f"persona-{idx + 1}").strip()
-            situation = (persona.get("situation") or "").strip()
-            # The run-test title already supplies the agent/run context. Repeating it on every
-            # scenario made a two-call suite render as several nearly identical UUID-prefixed
-            # rows. ALK sends the behavior being tested separately from the persona identity.
-            scenario_name = (
-                persona.get("scenario_name") or situation or persona_name
-            ).strip()[:255]
-            # A real 1-row dataset (persona/situation/outcome) makes the scenario
-            # render with persona rows AND lets the simulator prompt's
-            # {{persona}}/{{situation}} placeholders resolve — without it the
-            # placeholders ship to the model unsubstituted.
-            dataset = _build_persona_scenario_dataset(
-                organization, scenario_name, persona, workspace=workspace
-            )
-            scenarios.append(
-                Scenarios.objects.create(
-                    name=scenario_name,
-                    # ``clean()`` rejects blank source; fall back to the name.
-                    source=situation or persona_name,
-                    scenario_type=Scenarios.ScenarioTypes.DATASET,
-                    source_type=Scenarios.SourceTypes.AGENT_DEFINITION,
-                    agent_definition=agent_definition,
-                    organization=organization,
-                    workspace=workspace,
-                    dataset=dataset,
-                    status=StatusType.COMPLETED.value,
-                    metadata={"origin": "alk_sdk_ingestion", "persona": persona},
-                )
-            )
+        scenarios = _create_persona_scenarios(
+            organization, workspace, agent_definition, personas
+        )
 
         run_test = RunTest.objects.create(
             name=name,
@@ -421,6 +389,67 @@ def provision_alk_sim_run_test(
         run_test.scenarios.set(scenarios)
 
     return run_test, scenarios, agent_definition
+
+
+def append_alk_sim_scenarios(run_test, personas):
+    """Append new persona scenarios to an existing ALK run test, reusing its agent
+    definition + workspace, and attach them to the run's scenario set — used by the hosted
+    "add scenarios" follow-up so the extended world's new personas land on the same run."""
+    from django.db import transaction
+
+    with transaction.atomic():
+        created = _create_persona_scenarios(
+            run_test.organization,
+            run_test.workspace,
+            run_test.agent_definition,
+            personas,
+            name_offset=run_test.scenarios.count(),
+        )
+        run_test.scenarios.add(*created)
+    return created
+
+
+def _create_persona_scenarios(
+    organization, workspace, agent_definition, personas, *, name_offset=0
+):
+    """Create one DATASET scenario per persona (a 1-row persona/situation dataset), shared by
+    fresh provisioning and the extend-append path. ``name_offset`` continues the ``persona-N``
+    fallback numbering so appended personas never collide with the originals."""
+    from model_hub.models.choices import StatusType
+
+    created: list[Scenarios] = []
+    for idx, persona in enumerate(personas):
+        persona = dict(persona or {})
+        persona_name = (
+            persona.get("name") or f"persona-{name_offset + idx + 1}"
+        ).strip()
+        situation = (persona.get("situation") or "").strip()
+        # The run-test title supplies the agent/run context; ALK sends the behavior under
+        # test separately from persona identity, so the scenario name stays specific.
+        scenario_name = (
+            persona.get("scenario_name") or situation or persona_name
+        ).strip()[:255]
+        # A real 1-row dataset lets the simulator prompt's {{persona}}/{{situation}}
+        # placeholders resolve and renders the scenario with persona rows.
+        dataset = _build_persona_scenario_dataset(
+            organization, scenario_name, persona, workspace=workspace
+        )
+        created.append(
+            Scenarios.objects.create(
+                name=scenario_name,
+                # ``clean()`` rejects blank source; fall back to the name.
+                source=situation or persona_name,
+                scenario_type=Scenarios.ScenarioTypes.DATASET,
+                source_type=Scenarios.SourceTypes.AGENT_DEFINITION,
+                agent_definition=agent_definition,
+                organization=organization,
+                workspace=workspace,
+                dataset=dataset,
+                status=StatusType.COMPLETED.value,
+                metadata={"origin": "alk_sdk_ingestion", "persona": persona},
+            )
+        )
+    return created
 
 
 def _build_persona_scenario_dataset(

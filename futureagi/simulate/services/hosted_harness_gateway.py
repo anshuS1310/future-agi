@@ -250,13 +250,40 @@ def _hosted_scenario_repair_command(*, name: str, expected: int, actual: int) ->
     return _scenarios_cli_command(name=name, count=expected, guidance=[instruction])
 
 
+_SCENARIO_EXTEND_REPAIR_PASSES = 2
+
+
 def _hosted_scenario_extend_command(
     *, name: str, target_count: int, guidance: list[str]
 ) -> str:
     """Chat-driven 'add N scenarios': re-run scenario generation against the reused world to
     reach ``target_count`` total, preserving existing scenarios, steered by the caller's
-    natural-language guidance. The harness CLI owns the preserve/represent semantics."""
-    return _scenarios_cli_command(name=name, count=target_count, guidance=guidance)
+    natural-language guidance. The harness CLI owns the preserve/represent semantics.
+
+    A single ``--once`` pass may stop short of the target, and Bundle V2's exact-cardinality
+    gate then refuses the run. Mirror the fresh-authoring repair loop in-sandbox: after the
+    guided pass, re-run the CLI up to ``_SCENARIO_EXTEND_REPAIR_PASSES`` times while the
+    on-disk scenario count is still below the target. Progress accumulates in
+    ``/work/authoring`` between passes, which a platform-level relaunch (fresh sandbox, original
+    archive) could never do.
+    """
+    target = int(target_count)
+    extend = _scenarios_cli_command(name=name, count=target, guidance=guidance)
+    repair = _scenarios_cli_command(
+        name=name,
+        count=target,
+        guidance=[
+            f"Exactly {target} scenarios are required in total. Preserve every existing "
+            f"scenario exactly and add only new distinct validated scenarios until exactly "
+            f"{target} are saved."
+        ],
+    )
+    passes = " ".join(str(i) for i in range(1, _SCENARIO_EXTEND_REPAIR_PASSES + 1))
+    return (
+        f"{extend}; for _ in {passes}; do "
+        f'[ "$({_SCENARIO_DIRECTORY_COUNT_COMMAND})" -ge {target} ] && break; '
+        f"{repair}; done"
+    )
 
 
 def _extend_command_for(job: HostedHarnessJob, payload: dict) -> str | None:
@@ -1379,12 +1406,14 @@ class DaytonaHostedGateway:
                 raise HostedHarnessError(
                     "authoring_failed", detail, status_code=422, retryable=False
                 )
+            # Pack the authoring directory whole rather than an allow-list of file names: the
+            # guest decides what a saved world consists of (world.sqlite today, world.py +
+            # state.json + manifest.json on newer guests), and an allow-list here silently
+            # drops the marker the next reuse needs. Only the sealed bundle is left out: it is
+            # large and bundle_author_v2 regenerates it from this directory on every launch.
             packed = sandbox.process.exec(
                 "cd /work/authoring && tar -czf /tmp/authoring.tar.gz "
-                "$(ls -d world.sqlite schema.sql store.json collections.json "
-                "contract.json environment.json provider-import-profile.json "
-                "scenarios.json simulator_prompt.md "
-                "scenarios handlers 2>/dev/null)",
+                "--exclude=./environment-bundle --exclude=__pycache__ .",
                 timeout=180,
             )
             if packed.exit_code:
@@ -1949,14 +1978,10 @@ class DaytonaHostedGateway:
         ):
             try:
                 packed = sandbox.process.exec(
-                    "cd /work/authoring && set --; "
-                    "for path in schema.sql store.json world.sqlite collections.json "
-                    "contract.json environment.json scenarios.json simulator_prompt.md "
-                    "scenarios handlers; do "
-                    '[ -e "$path" ] && set -- "$@" "$path"; '
-                    "done; "
-                    '[ -f contract.json ] && [ -d scenarios ] && [ "$#" -gt 0 ] && '
-                    'tar -czf /tmp/authoring-rerun.tar.gz "$@"',
+                    "cd /work/authoring && "
+                    "[ -f contract.json ] && [ -d scenarios ] && "
+                    "tar -czf /tmp/authoring-rerun.tar.gz "
+                    "--exclude=./environment-bundle --exclude=__pycache__ .",
                     timeout=180,
                 )
                 if packed.exit_code:

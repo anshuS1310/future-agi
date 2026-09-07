@@ -608,7 +608,14 @@ class DaytonaHarnessProvider:
                         "end-to-end run; its follow-ups can then add scenarios.",
                         status_code=409,
                     )
-                new_count = job.scenario_count + count
+                # Add relative to what the environment actually holds: the scenarios
+                # registered by the last successful run are exactly what the saved authoring
+                # archive contains (it is only re-frozen on success). ``job.scenario_count``
+                # may still carry a target an earlier failed add never reached.
+                existing = HostedHarnessScenario.no_workspace_objects.filter(
+                    job=job
+                ).count()
+                new_count = (existing or job.scenario_count) + count
                 if new_count > 200:
                     raise HostedHarnessError(
                         "scenario_limit_exceeded",

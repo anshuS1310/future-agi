@@ -337,6 +337,31 @@ class HarnessJobAdjustmentSerializer(serializers.Serializer):
     )
 
 
+class HarnessJobExtendSerializer(serializers.Serializer):
+    # The finished-run chat box adds scenarios through an explicit "Add scenarios" action, so
+    # the request carries a structured ``count`` plus optional free-text ``guidance`` rather
+    # than prose we have to infer intent from. Rerun is a separate action, not this endpoint.
+    count = serializers.IntegerField(
+        min_value=1,
+        max_value=50,
+        help_text="How many new scenarios to add to the saved world.",
+    )
+    guidance = serializers.CharField(
+        max_length=2000,
+        trim_whitespace=True,
+        required=False,
+        allow_blank=True,
+        default="",
+        help_text=(
+            "Optional natural-language steering for the added scenarios (e.g. 'calm "
+            "first-time riders booking an airport pickup'). Existing scenarios are preserved."
+        ),
+    )
+    client_request_id = serializers.CharField(
+        max_length=128, required=False, allow_blank=False
+    )
+
+
 class HarnessSourceUploadResponseSerializer(serializers.Serializer):
     source_id = serializers.UUIDField()
     name = serializers.CharField()

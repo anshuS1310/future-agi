@@ -13,6 +13,8 @@ const secretFilesPath = () =>
   apiPath("/simulate/api/harness-jobs/secret-files/");
 const secretValuesPath = () =>
   apiPath("/simulate/api/harness-jobs/secret-values/");
+const extendPath = (id) =>
+  apiPath("/simulate/api/harness-jobs/{id}/extend/", { id });
 
 export const listHarnessJobs = async () => (await axios.get(jobsPath())).data;
 
@@ -74,3 +76,8 @@ export const cancelHarnessJob = async (id, reason) => {
 };
 export const adjustHarnessJob = async (id, payload) =>
   (await axios.post(adjustPath(id), payload)).data;
+// The RL-environment chat, once terminal, drives follow-ups: "add 5 scenarios with more
+// neutral happy flows" adds scenarios against the saved world; a message with no count
+// just reruns the saved suite.
+export const extendHarnessJob = async (id, payload) =>
+  (await axios.post(extendPath(id), payload)).data;

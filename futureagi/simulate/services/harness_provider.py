@@ -556,6 +556,105 @@ class DaytonaHarnessProvider:
         job.refresh_from_db()
         return serialize_job(job)
 
+    def extend(self, request, pk) -> Response:
+        """Chat 'Add scenarios' on a finished RL environment: add ``count`` new scenarios,
+        steered by optional guidance, replaying the authored world. Rerun is a separate action."""
+        import copy
+        from uuid import uuid4
+
+        from simulate.services.hosted_harness import HostedHarnessError
+
+        organization = _organization(request)
+        workspace = _workspace(request)
+        if organization is None:
+            return Response(
+                {"detail": "Organization not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        count = int(request.validated_data["count"])
+        guidance = str(request.validated_data.get("guidance") or "").strip()
+        client_request_id = request.validated_data.get("client_request_id") or None
+
+        terminal_states = {
+            HostedHarnessJob.State.COMPLETED,
+            HostedHarnessJob.State.FAILED,
+            HostedHarnessJob.State.CANCELED,
+        }
+        try:
+            with transaction.atomic():
+                job = (
+                    HostedHarnessJob.no_workspace_objects.select_for_update()
+                    .filter(id=str(pk), organization=organization, workspace=workspace)
+                    .first()
+                )
+                if job is None:
+                    raise HostedHarnessError(
+                        "job_not_found",
+                        "saved hosted harness job was not found",
+                        status_code=404,
+                    )
+                if job.state not in terminal_states:
+                    raise HostedHarnessError(
+                        "job_not_terminal",
+                        "scenarios can be added only after the run finishes; it is "
+                        f"{job.state}",
+                        status_code=409,
+                    )
+                metadata = (job.payload or {}).get("metadata") or {}
+                if not metadata.get("authoring_object_key"):
+                    raise HostedHarnessError(
+                        "extend_authoring_snapshot_missing",
+                        "This run predates deterministic scenario reuse. Start one new "
+                        "end-to-end run; its follow-ups can then add scenarios.",
+                        status_code=409,
+                    )
+                new_count = job.scenario_count + count
+                if new_count > 200:
+                    raise HostedHarnessError(
+                        "scenario_limit_exceeded",
+                        "a hosted run can contain at most 200 scenarios",
+                        status_code=422,
+                    )
+                payload = copy.deepcopy(job.payload)
+                meta = payload.setdefault("metadata", {})
+                adjustments = list(meta.get("adjustments") or [])
+                adjustments.append(
+                    {
+                        "adjustment_id": str(uuid4()),
+                        "client_request_id": client_request_id,
+                        "instruction": guidance,
+                        "target_stage": "scenarios",
+                        "scenario_delta": count,
+                        "status": "pending",
+                        "created_at": timezone.now().isoformat(),
+                    }
+                )
+                meta["adjustments"] = adjustments
+                # Consumed by the gateway launch: replay the frozen world but re-run
+                # scenario-gen to reach the new total, steered by any guidance.
+                meta["scenario_extend"] = {
+                    "guidance": [guidance] if guidance else [],
+                    "target_count": new_count,
+                }
+                payload["metadata"] = meta
+                job.payload = payload
+                job.scenario_count = new_count
+                job.save(update_fields=["payload", "scenario_count", "updated_at"])
+        except HostedHarnessError as exc:
+            return Response(exc.as_dict(), status=exc.status_code)
+
+        try:
+            return Response(
+                self.rerun_saved(
+                    str(pk),
+                    organization=organization,
+                    workspace=workspace,
+                    environment_values={},
+                )
+            )
+        except HostedHarnessError as exc:
+            return Response(exc.as_dict(), status=exc.status_code)
+
     def source_upload(self, request) -> Response:
         from simulate.services.hosted_harness import HostedHarnessError
         from simulate.services.hosted_harness_gateway import store_source_archive
@@ -652,6 +751,17 @@ class SandboxHarnessProvider:
                 "secret_refs": secret_refs,
                 "only": [],
             },
+        )
+
+    def extend(self, request, pk) -> Response:
+        return Response(
+            {
+                "error": "extend_not_supported",
+                "message": (
+                    "adding scenarios is only available on the hosted (daytona) provider"
+                ),
+            },
+            status=status.HTTP_400_BAD_REQUEST,
         )
 
     @staticmethod

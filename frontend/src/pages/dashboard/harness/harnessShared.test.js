@@ -538,6 +538,38 @@ describe("environmentName", () => {
   it("lets a caller supply its own fallback for slots that cannot be blank", () => {
     expect(environmentName({ metadata: {} }, "RL Environment")).toBe("RL Environment");
   });
+
+  // The regression #2427 reintroduced: github jobs submitted without
+  // metadata.name (API/CLI callers, older flow) fell to the em-dash. The repo
+  // name is a real, searchable name available from creation — so surface it.
+  it("falls back to the github repo name when metadata carries no name", () => {
+    expect(
+      environmentName({
+        metadata: { origin: "ui-path-branch-test" },
+        source: { kind: "github", repository: "future-agi/ride-voice-agent" },
+      }),
+    ).toBe("ride-voice-agent");
+  });
+
+  it("prefers an explicit metadata name over the repo fallback", () => {
+    expect(
+      environmentName({
+        metadata: { name: "My Agent" },
+        source: { kind: "github", repository: "future-agi/ride-voice-agent" },
+      }),
+    ).toBe("My Agent");
+  });
+
+  // Archive sources carry only an opaque artifact id — never surface it as a
+  // name (UI uploads already set metadata.name; this is the metadata-less edge).
+  it("never surfaces an archive artifact id", () => {
+    expect(
+      environmentName({
+        metadata: {},
+        source: { kind: "archive", archive_artifact_id: "abc123" },
+      }),
+    ).toBe("\u2014");
+  });
 });
 
 describe("eventMessage — hosted vocabulary", () => {

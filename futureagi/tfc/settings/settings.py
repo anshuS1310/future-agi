@@ -609,6 +609,16 @@ GCP_MARKETPLACE_SERVICE_NAME = os.environ.get("GCP_MARKETPLACE_SERVICE_NAME", ""
 GCP_MARKETPLACE_PUBSUB_SUBSCRIPTION = os.environ.get(
     "GCP_MARKETPLACE_PUBSUB_SUBSCRIPTION", ""
 )
+
+# Accepted `aud` values on the sign-up token, comma separated. Google documents
+# the claim as PARTNER_DOMAIN_NAME, so it is a domain, not the Service Control
+# service name. No default, because the service name is the one value the
+# documentation rules out. Confirm against a real token.
+GCP_MARKETPLACE_TOKEN_AUDIENCES = [
+    value.strip()
+    for value in os.environ.get("GCP_MARKETPLACE_TOKEN_AUDIENCES", "").split(",")
+    if value.strip()
+]
 # Service account JSON for local dev. On GKE leave unset and use Workload Identity.
 GCP_MARKETPLACE_SA_JSON = os.environ.get("GCP_MARKETPLACE_SA_JSON", "")
 
@@ -666,11 +676,6 @@ GCP_MARKETPLACE_DIMENSIONS = [
 
 # Google accepts these two as floating point. The other four must be integers.
 GCP_MARKETPLACE_FLOAT_DIMENSIONS = {"storage", "voice_sim_minutes"}
-
-# Dimensions that are a level rather than a running total. Storage is held, not
-# consumed, so a window delta is meaningless and the point-in-time value is
-# reported instead. Confirm against the metric unit in Producer Portal.
-GCP_MARKETPLACE_GAUGE_DIMENSIONS = {"storage"}
 
 # EE license key (self-hosted only, JWT RS256)
 EE_LICENSE_KEY = os.environ.get("EE_LICENSE_KEY", "")

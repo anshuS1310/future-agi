@@ -70,8 +70,11 @@ def gcp_marketplace_verify_token(request):
 
         try:
             account_id, user_identity = verify_marketplace_token(token)
-        except Exception:
-            logger.warning("gcp_marketplace_token_invalid")
+        except Exception as token_error:
+            # Signature, expiry and audience all land here, and an audience
+            # mismatch fails every sign-up alike. The customer sees only
+            # "invalid".
+            logger.warning("gcp_marketplace_token_invalid", reason=str(token_error))
             return _gm.bad_request("Invalid or expired GCP Marketplace token")
 
         onboarding_token, has_user = onboard_account(account_id, user_identity)

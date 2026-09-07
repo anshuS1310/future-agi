@@ -86,9 +86,11 @@ class GCPServiceControlService:
             {
                 "metricName": self.metric_name(metric_id),
                 "metricValues": [
-                    {"doubleValue": float(value)}
-                    if is_float
-                    else {"int64Value": str(int(value))}
+                    (
+                        {"doubleValue": float(value)}
+                        if is_float
+                        else {"int64Value": str(int(value))}
+                    )
                 ],
             }
             for metric_id, (value, is_float) in metric_values.items()
@@ -131,25 +133,27 @@ class GCPServiceControlService:
         return errors
 
     def report(
-        self, operation: dict, user_labels: dict[str, str] | None = None
-    ) -> list:
-        """Report one checked operation. Returns any report errors.
+        self, operations: list[dict], user_labels: dict[str, str] | None = None
+    ) -> set[str]:
+        """Report checked operations. Returns the ids Google rejected.
 
         An HTTP 200 does not mean the usage was accepted: per-operation failures
         come back in reportErrors. Treating a 200 as success would mark usage
         reported that Google rejected, and it would never be billed.
+
+        Errors are per operation, so one bad metric fails only its own operation
+        and the rest still bill. Returning ids rather than a bare list is what
+        lets the caller act on that.
         """
         # Forwarded to the customer's Cloud Billing cost-management tools for
         # attribution, and accepted by report but not by check. Omitted entirely
         # when empty rather than sent as {}.
         if user_labels:
-            operation = {**operation, "userLabels": user_labels}
-
-        body = {"operations": [operation]}
+            operations = [{**op, "userLabels": user_labels} for op in operations]
 
         response = (
             self.client.services()
-            .report(serviceName=self.service_name, body=body)
+            .report(serviceName=self.service_name, body={"operations": operations})
             .execute()
         )
 
@@ -157,11 +161,12 @@ class GCPServiceControlService:
         if errors:
             logger.error(
                 "gcp_marketplace_report_errors",
-                consumer_id=operation.get("consumerId"),
-                operation_id=operation.get("operationId"),
+                consumer_id=operations[0].get("consumerId") if operations else None,
                 errors=errors,
             )
-        return errors
+        return {
+            error.get("operationId") for error in errors if error.get("operationId")
+        }
 
 
 gcp_service_control = GCPServiceControlService()

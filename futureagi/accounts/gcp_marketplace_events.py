@@ -53,12 +53,44 @@ def _subject_id(payload: dict) -> str:
     return ""
 
 
+def _refresh_plan_caches(organization_id) -> None:
+    """Every write to OrganizationSubscription.plan owes these two calls.
+
+    Without them the resolver serves the previous plan for up to the cache TTL,
+    so a customer who just paid keeps getting 402s until it expires.
+
+    Deferred to commit because process_event runs handlers inside a transaction.
+    publish_quotas_for_org reads the plan back and caches what it finds, so
+    running it early would repopulate the cache from a write that may still roll
+    back, and leave the stale value there for the rest of the TTL.
+    """
+
+    def _refresh():
+        from ee.usage.services.entitlements import invalidate_plan_caches
+        from ee.usage.services.metering import publish_quotas_for_org
+
+        invalidate_plan_caches(str(organization_id))
+        publish_quotas_for_org(str(organization_id))
+
+    transaction.on_commit(_refresh)
+
+
 def _apply_plan(entitlement_row: GCPMarketplaceEntitlement) -> None:
     """Set the organization's plan from the entitlement's marketplace plan."""
     if OrganizationSubscription is None or not entitlement_row.organization_id:
         return
 
-    plan, interval = resolve_plan(entitlement_row.plan_id)
+    try:
+        plan, interval = resolve_plan(entitlement_row.plan_id)
+    except ValueError:
+        # Raising leaves the message unacked and Google redelivers a plan we
+        # still cannot map, for ever. The mapping needs a human.
+        logger.error(
+            "gcp_marketplace_unmapped_plan",
+            entitlement_id=entitlement_row.entitlement_id,
+            plan_id=entitlement_row.plan_id,
+        )
+        return
 
     OrganizationSubscription.objects.filter(
         organization_id=entitlement_row.organization_id
@@ -67,6 +99,7 @@ def _apply_plan(entitlement_row: GCPMarketplaceEntitlement) -> None:
         billing_interval=interval,
         billing_method=BillingMethodChoices.GCP_MARKETPLACE,
     )
+    _refresh_plan_caches(entitlement_row.organization_id)
     logger.info(
         "gcp_marketplace_plan_applied",
         entitlement_id=entitlement_row.entitlement_id,
@@ -75,17 +108,20 @@ def _apply_plan(entitlement_row: GCPMarketplaceEntitlement) -> None:
     )
 
 
-def _downgrade_to_free(entitlement_row: GCPMarketplaceEntitlement) -> None:
+def _downgrade_org_to_free(organization_id) -> None:
     """Drop to free and hand billing back. Customer data is untouched."""
-    if OrganizationSubscription is None or not entitlement_row.organization_id:
+    if OrganizationSubscription is None or not organization_id:
         return
 
-    OrganizationSubscription.objects.filter(
-        organization_id=entitlement_row.organization_id
-    ).update(
+    OrganizationSubscription.objects.filter(organization_id=organization_id).update(
         plan=PlanChoices.FREE,
         billing_method=BillingMethodChoices.CARD,
     )
+    _refresh_plan_caches(organization_id)
+
+
+def _downgrade_to_free(entitlement_row: GCPMarketplaceEntitlement) -> None:
+    _downgrade_org_to_free(entitlement_row.organization_id)
     logger.info(
         "gcp_marketplace_downgraded_to_free",
         entitlement_id=entitlement_row.entitlement_id,
@@ -157,9 +193,18 @@ def handle_account_active(payload: dict) -> None:
 def handle_account_deleted(payload: dict) -> None:
     """Unlink, never delete. This ends a billing relationship, not a customer."""
     account_id = _subject_id(payload)
-    GCPMarketplaceAccount.objects.filter(procurement_account_id=account_id).update(
-        organization=None
-    )
+    account = GCPMarketplaceAccount.objects.filter(
+        procurement_account_id=account_id
+    ).first()
+    if account is None:
+        return
+
+    # Handed back before the link goes, or the org keeps a Marketplace billing
+    # method with no Marketplace behind it and nothing bills it at all.
+    _downgrade_org_to_free(account.organization_id)
+
+    account.organization = None
+    account.save(update_fields=["organization", "updated_at"])
     logger.info("gcp_marketplace_account_deleted", account_id=account_id)
 
 
@@ -224,7 +269,24 @@ def handle_entitlement_cancelled(payload: dict) -> None:
     row = sync_entitlement(_subject_id(payload))
     if row is None:
         return
+
+    # Access first: a billing failure must never leave a cancelled customer on
+    # a paid plan. The final report goes last so nothing after it can roll the
+    # transaction back and lose the checkpoints it just wrote.
     _downgrade_to_free(row)
+
+    from accounts.gcp_marketplace_usage import report_final_window
+
+    try:
+        report_final_window(row)
+    except Exception:
+        # Under an hour of usage, and the entitlement is gone from the hourly
+        # sweep, so there is no retry. Logged rather than raised: redelivering
+        # this event would re-run the downgrade for nothing.
+        logger.exception(
+            "gcp_marketplace_final_usage_report_failed",
+            entitlement_id=row.entitlement_id,
+        )
 
 
 def handle_entitlement_renewed(payload: dict) -> None:

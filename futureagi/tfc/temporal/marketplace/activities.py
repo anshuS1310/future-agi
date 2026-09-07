@@ -31,6 +31,13 @@ def _subscription_path(subscriber):
     return subscriber.subscription_path(project, subscription)
 
 
+def _is_configured() -> bool:
+    return bool(
+        settings.GCP_MARKETPLACE_PROJECT_ID
+        and settings.GCP_MARKETPLACE_PUBSUB_SUBSCRIPTION
+    )
+
+
 def _drain_sync(heartbeat) -> dict:
     from google.cloud import pubsub_v1
 
@@ -85,6 +92,10 @@ def _drain_sync(heartbeat) -> dict:
 
 @activity.defn(name="drain_gcp_marketplace_events_activity")
 async def drain_gcp_marketplace_events_activity(input=None) -> DrainResult:
+    if not _is_configured():
+        # Cloud-only. Elsewhere this would fail every five minutes for ever.
+        return DrainResult(events_processed=0, had_events=False)
+
     result = await asyncio.to_thread(_drain_sync, activity.heartbeat)
     return DrainResult(
         events_processed=result["events_processed"],

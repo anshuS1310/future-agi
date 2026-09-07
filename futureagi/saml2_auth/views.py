@@ -672,6 +672,13 @@ class Auth0LoginView(APIView):
 
         onboarding_token = request.validated_query_data.get("onboarding_token") or ""
 
+        # Microsoft's callback does not read the state back, so it would build a
+        # second free organization and strand the paid one.
+        if onboarding_token and provider == "microsoft":
+            return self._gm.bad_request(
+                "Marketplace sign-up supports Google and GitHub sign-in"
+            )
+
         if provider == "google":
             params = {
                 "response_type": "code",
@@ -690,8 +697,11 @@ class Auth0LoginView(APIView):
                 "client_id": GITHUB_CLIENT_ID,
                 "redirect_uri": GITHUB_CALLBACK_URL,
                 "scope": "user:email",  # adjust scopes as needed
-                # "state": some_random_string,  # recommended: generate and store in session for CSRF protection
             }
+            # A Marketplace customer who picks GitHub over the sign-up form must
+            # still land in the organization the procurement account created.
+            if onboarding_token:
+                params["state"] = encode_oauth_state(onboarding_token)
             auth_url = f"{GITHUB_OAUTH_URL}/authorize?" + urllib.parse.urlencode(params)
             logger.info(f"Redirecting user to GitHub auth URL: {auth_url}")
             return self._gm.success_response({"url": auth_url})
@@ -710,6 +720,41 @@ class Auth0LoginView(APIView):
             return self._gm.success_response({"url": auth_url})
         else:
             return self._gm.bad_request("Not Implemented")
+
+
+def resolve_sso_user(user_email, name, onboarding_token, mode):
+    """Find or create the user behind a verified SSO identity.
+
+    Shared by the OAuth callbacks so the Marketplace rules hold whichever
+    provider the customer picks: an onboarding token makes them the owner of the
+    organization their procurement account already created, and an account that
+    exists already can never absorb a subscription, because it belongs to an
+    organization with its own billing.
+
+    Returns (user, next_url, new_org).
+    """
+    try:
+        user_model = User.objects.get(email=user_email)
+        if not user_model.is_active:
+            raise Exception("User is no longer active.")
+
+        if onboarding_token:
+            raise Exception("An account with this email already exists")
+
+        properties = get_mixpanel_properties(user=user_model, mode=mode)
+        track_mixpanel_event(MixpanelEvents.SSO_LOGIN.value, properties)
+        return user_model, default_next_url, "false"
+
+    except User.DoesNotExist:
+        if onboarding_token:
+            user_model = marketplace_signup(onboarding_token, user_email, name)
+            properties = get_mixpanel_properties(user=user_model, mode=mode)
+            track_mixpanel_event(MixpanelEvents.SSO_SIGNUP.value, properties)
+        else:
+            # first_signup emits its own Mixpanel event.
+            data = {"full_name": name, "email": user_email}
+            user_model = first_signup(data, mode=mode)
+        return user_model, get_started_url, "true"
 
 
 class Auth0CallbackView(APIView):
@@ -782,44 +827,12 @@ class Auth0CallbackView(APIView):
                 #     # return self._gm.bad_request("Email must be a work email")
                 #     raise Exception("Email must be a work email")
 
-                try:
-                    user_model = User.objects.get(
-                        email=user_email,
-                    )
-                    if not user_model.is_active:
-                        raise Exception("User is no longer active.")
-
-                    # Same rule as the sign-up form: an existing account cannot
-                    # absorb a Marketplace subscription, because it already
-                    # belongs to an organization with its own billing.
-                    if onboarding_token:
-                        raise Exception("An account with this email already exists")
-
-                    next_url = default_next_url
-
-                    properties = get_mixpanel_properties(
-                        user=user_model, mode=MixpanelModes.GOOGLE.value
-                    )
-                    track_mixpanel_event(MixpanelEvents.SSO_LOGIN.value, properties)
-
-                except User.DoesNotExist:
-                    new_org = "true"
-                    if onboarding_token:
-                        # Owner of the organization the procurement account
-                        # already created, not a new one.
-                        user_model = marketplace_signup(
-                            onboarding_token, user_email, name
-                        )
-                        properties = get_mixpanel_properties(
-                            user=user_model, mode=MixpanelModes.GOOGLE.value
-                        )
-                        track_mixpanel_event(
-                            MixpanelEvents.SSO_SIGNUP.value, properties
-                        )
-                    else:
-                        data = {"full_name": name, "email": user_email}
-                        user_model = first_signup(data, mode=MixpanelModes.GOOGLE.value)
-                    next_url = get_started_url
+                user_model, next_url, new_org = resolve_sso_user(
+                    user_email,
+                    name,
+                    onboarding_token,
+                    MixpanelModes.GOOGLE.value,
+                )
 
                 access_token = AuthToken.objects.create(
                     user=user_model,
@@ -945,24 +958,16 @@ class GithubCallbackView(APIView):
             #     # return self._gm.bad_request("Email must be a work email")
             #     raise Exception("Email must be a work email")
 
-            try:
-                user_model = User.objects.get(
-                    email=user_email,
-                )
-                if not user_model.is_active:
-                    raise Exception("User is no longer active.")
-                next_url = default_next_url
+            onboarding_token = read_oauth_state(
+                request.validated_query_data.get("state")
+            )
 
-                properties = get_mixpanel_properties(
-                    user=user_model, mode=MixpanelModes.GITHUB.value
-                )
-                track_mixpanel_event(MixpanelEvents.SSO_LOGIN.value, properties)
-
-            except User.DoesNotExist:
-                new_org = "true"
-                data = {"full_name": name, "email": user_email}
-                user_model = first_signup(data, mode=MixpanelModes.GITHUB.value)
-                next_url = get_started_url
+            user_model, next_url, new_org = resolve_sso_user(
+                user_email,
+                name,
+                onboarding_token,
+                MixpanelModes.GITHUB.value,
+            )
 
             access_token = AuthToken.objects.create(
                 user=user_model,

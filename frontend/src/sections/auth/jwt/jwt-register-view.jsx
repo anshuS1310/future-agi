@@ -648,30 +648,32 @@ export default function JwtRegisterView() {
                 Continue with Github
               </Typography>
             </Button>
-            <Button
-              sx={{
-                border: "1px solid",
-                borderColor: "divider",
-                borderRadius: 0.5,
+            {!onboarding_gcp_token && (
+              <Button
+                sx={{
+                  border: "1px solid",
+                  borderColor: "divider",
+                  borderRadius: 0.5,
 
-                height: 44,
-                color: "text.primary",
-              }}
-              onClick={handleSsoLogin}
-              startIcon={
-                <SvgColor
-                  sx={{ marginLeft: 2 }}
-                  src="/assets/icons/ic_sso_saml.svg"
-                />
-              }
-            >
-              <Typography
-                fontWeight={"fontWeightMedium"}
-                sx={{ fontSize: "15px", marginRight: -1.5 }}
+                  height: 44,
+                  color: "text.primary",
+                }}
+                onClick={handleSsoLogin}
+                startIcon={
+                  <SvgColor
+                    sx={{ marginLeft: 2 }}
+                    src="/assets/icons/ic_sso_saml.svg"
+                  />
+                }
               >
-                Continue with SSO/SAML
-              </Typography>
-            </Button>
+                <Typography
+                  fontWeight={"fontWeightMedium"}
+                  sx={{ fontSize: "15px", marginRight: -1.5 }}
+                >
+                  Continue with SSO/SAML
+                </Typography>
+              </Button>
+            )}
           </>
         )}
 

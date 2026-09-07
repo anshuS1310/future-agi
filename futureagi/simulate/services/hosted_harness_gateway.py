@@ -208,34 +208,98 @@ def _adjustment_stage(instruction: str, current_stage: str) -> str:
     }.get(current_stage, "scenarios")
 
 
-def _hosted_scenario_repair_script(*, name: str, expected: int, actual: int) -> str:
-    """Build the non-interactive scenario-only repair run used by pinned guests.
-
-    Keeping this in the gateway lets the control plane repair an older hosted snapshot without
-    weakening Bundle V2's exact-cardinality gate or requiring a privileged in-sandbox updater.
-    Values are encoded as JSON literals rather than interpolated as executable source.
+def _scenarios_cli_command(*, name: str, count: int, guidance: list[str]) -> str:
+    """A non-interactive invocation of the harness's own scenario CLI against the reused
+    ``/work/authoring``: reach exactly ``count`` scenarios, preserving existing ones, steered
+    by ``guidance``. Uses the harness's public CLI contract (``alk-harness scenarios``) rather
+    than importing its internals, matching how every other stage is launched in the sandbox.
     """
+    parts = [
+        "python -m fi.alk.harness.cli scenarios",
+        f"--name {shlex.quote(str(name) or 'agent')}",
+        "--out /work/authoring",
+        f"--count {int(count)}",
+        "--once",
+    ]
+    for item in guidance:
+        text = str(item).strip()
+        if text:
+            parts.append(f"--guidance {shlex.quote(text)}")
+    return " ".join(parts)
+
+
+def _hosted_scenario_repair_command(*, name: str, expected: int, actual: int) -> str:
+    """Non-interactive scenario-only repair: reach the exact ``expected`` count, preserving
+    existing coverage, so Bundle V2's exact-cardinality gate is satisfied without a privileged
+    in-sandbox updater."""
     delta = expected - actual
     if delta > 0:
         instruction = (
             f"Exactly {expected} scenarios are required, but {actual} are saved. "
-            f"Add exactly {delta} distinct validated scenario(s), preserve the existing "
-            "scenarios, and call save_scenarios."
+            f"Add exactly {delta} distinct validated scenario(s) and preserve the existing ones."
         )
     else:
         instruction = (
             f"Exactly {expected} scenarios are required, but {actual} are saved. "
-            f"Remove exactly {-delta} excess scenario(s), preserve the strongest coverage, "
-            "and call save_scenarios."
+            f"Remove exactly {-delta} excess scenario(s), preserving the strongest coverage."
         )
+    return _scenarios_cli_command(name=name, count=expected, guidance=[instruction])
+
+
+_SCENARIO_EXTEND_REPAIR_PASSES = 2
+
+
+def _hosted_scenario_extend_command(
+    *, name: str, target_count: int, guidance: list[str]
+) -> str:
+    """Chat-driven 'add N scenarios': re-run scenario generation against the reused world to
+    reach ``target_count`` total, preserving existing scenarios, steered by the caller's
+    natural-language guidance. The harness CLI owns the preserve/represent semantics.
+
+    A single ``--once`` pass may stop short of the target, and Bundle V2's exact-cardinality
+    gate then refuses the run. Mirror the fresh-authoring repair loop in-sandbox: after the
+    guided pass, re-run the CLI up to ``_SCENARIO_EXTEND_REPAIR_PASSES`` times while the
+    on-disk scenario count is still below the target. Progress accumulates in
+    ``/work/authoring`` between passes, which a platform-level relaunch (fresh sandbox, original
+    archive) could never do.
+    """
+    target = int(target_count)
+    extend = _scenarios_cli_command(name=name, count=target, guidance=guidance)
+    repair = _scenarios_cli_command(
+        name=name,
+        count=target,
+        guidance=[
+            f"Exactly {target} scenarios are required in total. Preserve every existing "
+            f"scenario exactly and add only new distinct validated scenarios until exactly "
+            f"{target} are saved."
+        ],
+    )
+    passes = " ".join(str(i) for i in range(1, _SCENARIO_EXTEND_REPAIR_PASSES + 1))
     return (
-        "import argparse, asyncio\n"
-        "from fi.alk.harness.cli import _scenarios\n"
-        "args = argparse.Namespace("
-        f"name={json.dumps(name)}, out='/work/authoring', count={expected}, "
-        "interactive=False, "
-        f"guidance=[{json.dumps(instruction)}])\n"
-        "raise SystemExit(asyncio.run(_scenarios(args)))\n"
+        f"{extend}; for _ in {passes}; do "
+        f'[ "$({_SCENARIO_DIRECTORY_COUNT_COMMAND})" -ge {target} ] && break; '
+        f"{repair}; done"
+    )
+
+
+def _extend_command_for(job: HostedHarnessJob, payload: dict) -> str | None:
+    """Return the reused-authoring scenario-extension CLI command when the job carries a
+    pending chat-driven 'add scenarios' request (a target count), else None for a normal run.
+    Guidance is optional — the count alone drives the add; guidance only steers the new ones."""
+    extend = (payload.get("metadata") or {}).get("scenario_extend")
+    if not extend:
+        return None
+    target_count = extend.get("target_count")
+    if not target_count:
+        return None
+    guidance = [str(item) for item in (extend.get("guidance") or []) if str(item).strip()]
+    name = str(
+        (payload.get("metadata") or {}).get("agent_name")
+        or payload.get("name")
+        or "agent"
+    )
+    return _hosted_scenario_extend_command(
+        name=name, target_count=int(target_count), guidance=guidance
     )
 
 
@@ -1290,7 +1354,7 @@ class DaytonaHostedGateway:
                     break
                 if run.exit_code == 0 and produced > 0:
                     for repair_attempt in range(1, 3):
-                        script = _hosted_scenario_repair_script(
+                        repair_command = _hosted_scenario_repair_command(
                             name=str(
                                 job.metadata.get("agent_name")
                                 or job.payload.get("name")
@@ -1299,11 +1363,8 @@ class DaytonaHostedGateway:
                             expected=job.scenario_count,
                             actual=produced,
                         )
-                        sandbox.fs.upload_file(
-                            script.encode("utf-8"), "/tmp/repair-scenarios.py"
-                        )
                         repair = sandbox.process.exec(
-                            "python /tmp/repair-scenarios.py",
+                            repair_command,
                             env=authoring_env,
                             timeout=run_timeout,
                         )
@@ -1338,12 +1399,14 @@ class DaytonaHostedGateway:
                 raise HostedHarnessError(
                     "authoring_failed", detail, status_code=422, retryable=False
                 )
+            # Pack the authoring directory whole rather than an allow-list of file names: the
+            # guest decides what a saved world consists of (world.sqlite today, world.py +
+            # state.json + manifest.json on newer guests), and an allow-list here silently
+            # drops the marker the next reuse needs. Only the sealed bundle is left out: it is
+            # large and bundle_author_v2 regenerates it from this directory on every launch.
             packed = sandbox.process.exec(
                 "cd /work/authoring && tar -czf /tmp/authoring.tar.gz "
-                "$(ls -d world.sqlite schema.sql store.json collections.json "
-                "contract.json environment.json provider-import-profile.json "
-                "scenarios.json simulator_prompt.md "
-                "scenarios handlers 2>/dev/null)",
+                "--exclude=./environment-bundle --exclude=__pycache__ .",
                 timeout=180,
             )
             if packed.exit_code:
@@ -1380,6 +1443,13 @@ class DaytonaHostedGateway:
             # Resolve cached authoring created before connector resolution shipped as well as
             # newly-authored jobs. This must happen before network policy and job.json are built.
             payload = resolve_authored_connector(payload, authoring_archive)
+        # A chat-driven "add N scenarios" request replays the frozen world but re-runs
+        # scenario-gen (extend) against it. The marker persists across infra retries and is
+        # cleared only once the extended authoring is stored (store_authoring_archive), so a
+        # mid-flight retry re-extends to the same total instead of replaying the old set.
+        extend_command = (
+            _extend_command_for(job, payload) if authoring_archive is not None else None
+        )
         source = dict(payload["source"])
         if source["kind"] == "github":
             source["commit_sha"] = commit_sha
@@ -1623,7 +1693,8 @@ class DaytonaHostedGateway:
                         + provider_profile_args
                         + "; "
                         "fi && "
-                        "python -m fi.alk.harness.bundle_author_v2 "
+                        + ((extend_command + " && ") if extend_command else "")
+                        + "python -m fi.alk.harness.bundle_author_v2 "
                         "--job /work/job.json --source /work/source "
                         "--authoring /work/authoring --output /work/bundle && "
                         "python -m fi.alk.harness.hosted_entrypoint /work/job.json "
@@ -1885,23 +1956,25 @@ class DaytonaHostedGateway:
         # has accepted them.  A saved rerun can then rebuild the environment while
         # using the exact same sealed scenario suite instead of asking the model to
         # author a different suite for an already-registered RunTest.
+        # A chat "add scenarios" extend re-authors the SAME RunTest up to N+delta, so it must
+        # re-freeze even though a key already exists — gated on its one-shot marker.
+        # store_authoring_archive clears that marker in the same save.
         metadata = (job.payload or {}).get("metadata") or {}
         if (
             isinstance(bundle, dict)
             and isinstance(scenarios, list)
             and len(scenarios) == job.scenario_count
-            and not metadata.get("authoring_object_key")
+            and (
+                not metadata.get("authoring_object_key")
+                or metadata.get("scenario_extend")
+            )
         ):
             try:
                 packed = sandbox.process.exec(
-                    "cd /work/authoring && set --; "
-                    "for path in schema.sql store.json world.sqlite collections.json "
-                    "contract.json environment.json scenarios.json simulator_prompt.md "
-                    "scenarios handlers; do "
-                    '[ -e "$path" ] && set -- "$@" "$path"; '
-                    "done; "
-                    '[ -f contract.json ] && [ -d scenarios ] && [ "$#" -gt 0 ] && '
-                    'tar -czf /tmp/authoring-rerun.tar.gz "$@"',
+                    "cd /work/authoring && "
+                    "[ -f contract.json ] && [ -d scenarios ] && "
+                    "tar -czf /tmp/authoring-rerun.tar.gz "
+                    "--exclude=./environment-bundle --exclude=__pycache__ .",
                     timeout=180,
                 )
                 if packed.exit_code:
@@ -2743,6 +2816,9 @@ def store_authoring_archive(
     metadata = dict(payload.get("metadata") or {})
     metadata["authoring_object_key"] = object_key
     metadata["authoring_mode"] = "fresh"
+    # A chat "add scenarios" run consumes its one-shot extend marker here, once the extended
+    # authoring is durably stored, so a later plain rerun replays this set without re-extending.
+    metadata.pop("scenario_extend", None)
     payload["metadata"] = metadata
     job.payload = payload
     update_fields = ["payload", "updated_at"]

@@ -33,6 +33,7 @@ import {
   cancelHarnessJob,
   getHarnessJob,
   listHarnessJobs,
+  extendHarnessJob,
 } from "src/api/harness/harness";
 import { paths } from "src/routes/paths";
 
@@ -91,10 +92,12 @@ export default function HarnessDetail() {
   const [clock, setClock] = useState(Date.now());
   const [cancelError, setCancelError] = useState("");
   const [confirmingCancel, setConfirmingCancel] = useState(false);
+  const [extendError, setExtendError] = useState("");
   const [stagesOpen, setStagesOpen] = useState(false);
   const [copiedId, setCopiedId] = useState(false);
   const [detailTab, setDetailTab] = useState("contract");
   const [adjustment, setAdjustment] = useState("");
+  const [addCount, setAddCount] = useState(3);
   const feedRef = useRef(null);
   // Whether the reader is sitting at the end of the feed. New activity follows the end
   // only while they are; someone who scrolled up to read history is left where they are.
@@ -192,6 +195,40 @@ export default function HarnessDetail() {
         message: requestError?.message,
       });
       setAdjustError(errorMessage(requestError));
+    },
+  });
+
+  const { mutate: extend, isPending: extending } = useMutation({
+    mutationFn: () => {
+      // The finished-run "Add scenarios" action: add `addCount` scenarios to the saved
+      // world, steered by the optional guidance typed in the box. Rerun is a separate action.
+      const guidance = adjustment.trim();
+      const requestId = window.crypto?.randomUUID?.();
+      return extendHarnessJob(jobId, {
+        count: addCount,
+        ...(guidance ? { guidance } : {}),
+        ...(requestId ? { client_request_id: requestId } : {}),
+      });
+    },
+    onMutate: () => setExtendError(""),
+    onSuccess: (value) => {
+      // The follow-up relaunches the environment (extended or replayed): the job returns
+      // to queued and this page's poll resumes.
+      queryClient.setQueryData(["harness-job", jobId], value);
+      queryClient.invalidateQueries({ queryKey: ["harness-jobs"] });
+      setAdjustment("");
+      pinnedToEnd.current = true;
+      setDetailTab("runs");
+    },
+    onError: (requestError) => {
+      // eslint-disable-next-line no-console
+      console.error("Extend environment failed", {
+        jobId,
+        statusCode: requestError?.statusCode,
+        detail: requestError?.detail,
+        message: requestError?.message,
+      });
+      setExtendError(errorMessage(requestError));
     },
   });
 
@@ -995,11 +1032,10 @@ export default function HarnessDetail() {
               )}
             </Box>
 
-            {/* Docked at the foot of the pane on every tab, because a correction is
-                about the run, not about whichever tab you happen to be reading. Only
-                while the run can still act on one. Full width, because a sentence of
-                instruction does not belong in a 264px rail. */}
-            {!isTerminal && (
+            {/* Docked at the foot of the pane on every tab. While the run is live the box
+                sends a correction to the active authoring; once it is terminal the same box
+                reruns the saved environment, so the conversation never dead-ends. */}
+            {(!isTerminal || Boolean(simulation?.test_execution_id)) && (
               <Box
                 sx={{
                   flexShrink: 0,
@@ -1011,14 +1047,10 @@ export default function HarnessDetail() {
               >
                 <Box
                   sx={{
-                    // 8px, the same radius the timeline cards carry, so the composer
-                    // belongs to the panel rather than reading as a pill dropped on it.
                     borderRadius: 1,
                     border: 1,
                     borderColor: "divider",
                     bgcolor: "background.paper",
-                    // The whole box is the control, so the focus ring belongs to the box
-                    // rather than to the bare input sitting inside it.
                     "&:focus-within": { borderColor: "text.disabled" },
                   }}
                 >
@@ -1026,17 +1058,24 @@ export default function HarnessDetail() {
                     fullWidth
                     multiline
                     maxRows={8}
-                    placeholder="Tell the run what to change…"
+                    placeholder={
+                      isTerminal
+                        ? "Describe the scenarios to add — e.g. 'calm first-time riders booking an airport pickup' (optional)"
+                        : "Tell the run what to change…"
+                    }
                     value={adjustment}
                     onChange={(event) => setAdjustment(event.target.value)}
                     onKeyDown={(event) => {
-                      // Enter sends and Shift+Enter breaks the line, the way every
-                      // message box behaves. ⌘/Ctrl+Enter sends too, for the habit.
+                      // Enter sends; Shift+Enter breaks the line.
                       if (event.key !== "Enter" || event.shiftKey) return;
                       event.preventDefault();
-                      // An empty box is not an error to report, it is nothing to do.
-                      if (adjusting || !adjustment.trim()) return;
-                      adjust();
+                      if (isTerminal) {
+                        if (extending) return;
+                        extend();
+                      } else {
+                        if (adjusting || !adjustment.trim()) return;
+                        adjust();
+                      }
                     }}
                     sx={{ px: 1.5, pt: 1.25, typography: "body2" }}
                   />
@@ -1047,39 +1086,97 @@ export default function HarnessDetail() {
                     sx={{ px: 1.5, pb: 1, pt: 0.5 }}
                   >
                     <Typography variant="caption" color="text.disabled">
-                      Applied at the next stage boundary
+                      {isTerminal
+                        ? "Adds scenarios to the saved world"
+                        : "Applied at the next stage boundary"}
                     </Typography>
-                    <IconButton
-                      size="small"
-                      onClick={() => adjust()}
-                      disabled={adjusting || !adjustment.trim()}
-                      aria-label="Send"
-                      sx={{
-                        bgcolor: "accent.brand",
-                        color: "common.white",
-                        "&:hover": { bgcolor: "accent.brand", opacity: 0.88 },
-                        "&.Mui-disabled": {
-                          bgcolor: "action.disabledBackground",
-                          color: "text.disabled",
-                        },
-                      }}
-                    >
-                      {adjusting ? (
-                        <CircularProgress size={14} color="inherit" />
-                      ) : (
-                        <Iconify icon="solar:plain-linear" width={15} />
-                      )}
-                    </IconButton>
+                    {isTerminal ? (
+                      <Stack direction="row" alignItems="center" spacing={1}>
+                        <Stack
+                          direction="row"
+                          alignItems="center"
+                          sx={{ border: 1, borderColor: "divider", borderRadius: 1 }}
+                        >
+                          <IconButton
+                            size="small"
+                            aria-label="Fewer scenarios"
+                            disabled={extending || addCount <= 1}
+                            onClick={() => setAddCount((n) => Math.max(1, n - 1))}
+                          >
+                            <Iconify icon="solar:minus-square-linear" width={15} />
+                          </IconButton>
+                          <Typography
+                            variant="body2"
+                            sx={{ minWidth: 18, textAlign: "center" }}
+                          >
+                            {addCount}
+                          </Typography>
+                          <IconButton
+                            size="small"
+                            aria-label="More scenarios"
+                            disabled={extending || addCount >= 20}
+                            onClick={() => setAddCount((n) => Math.min(20, n + 1))}
+                          >
+                            <Iconify icon="solar:add-square-linear" width={15} />
+                          </IconButton>
+                        </Stack>
+                        <Button
+                          size="small"
+                          variant="contained"
+                          onClick={() => extend()}
+                          disabled={extending}
+                          startIcon={
+                            extending ? (
+                              <CircularProgress size={14} color="inherit" />
+                            ) : (
+                              <Iconify icon="solar:add-circle-linear" width={15} />
+                            )
+                          }
+                          sx={{
+                            bgcolor: "accent.brand",
+                            color: "common.white",
+                            "&:hover": { bgcolor: "accent.brand", opacity: 0.88 },
+                          }}
+                        >
+                          Add scenarios
+                        </Button>
+                      </Stack>
+                    ) : (
+                      <IconButton
+                        size="small"
+                        onClick={() => adjust()}
+                        disabled={adjusting || !adjustment.trim()}
+                        aria-label="Send"
+                        sx={{
+                          bgcolor: "accent.brand",
+                          color: "common.white",
+                          "&:hover": { bgcolor: "accent.brand", opacity: 0.88 },
+                          "&.Mui-disabled": {
+                            bgcolor: "action.disabledBackground",
+                            color: "text.disabled",
+                          },
+                        }}
+                      >
+                        {adjusting ? (
+                          <CircularProgress size={14} color="inherit" />
+                        ) : (
+                          <Iconify icon="solar:plain-linear" width={15} />
+                        )}
+                      </IconButton>
+                    )}
                   </Stack>
                 </Box>
-                {adjustError && (
+                {(adjustError || extendError) && (
                   <Alert
                     severity="error"
                     variant="outlined"
-                    onClose={() => setAdjustError("")}
+                    onClose={() => {
+                      setAdjustError("");
+                      setExtendError("");
+                    }}
                     sx={{ mt: 1 }}
                   >
-                    {adjustError}
+                    {adjustError || extendError}
                   </Alert>
                 )}
               </Box>

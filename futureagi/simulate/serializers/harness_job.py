@@ -230,6 +230,9 @@ class HarnessArtifactSerializer(serializers.Serializer):
 
 
 class HarnessJobCreateSerializer(serializers.Serializer):
+    # Create refuses a job whose connector has no credentials; preflight reports them as
+    # unmet requirements instead, so the readiness panel can tell the user what to add.
+    reject_missing_credentials = True
     schema_version = serializers.ChoiceField(
         choices=("futureagi.harness-job.v1",),
         default="futureagi.harness-job.v1",
@@ -267,8 +270,8 @@ class HarnessJobCreateSerializer(serializers.Serializer):
             raise serializers.ValidationError(
                 {"agent": "remote sources must own their target credentials"}
             )
-        if attrs["source"]["kind"] != "remote":
-            missing = _missing_provider_credentials(attrs["agent"])
+        if self.reject_missing_credentials and attrs["source"]["kind"] != "remote":
+            missing = missing_provider_credentials(attrs["agent"])
             if missing:
                 raise serializers.ValidationError(
                     {
@@ -284,15 +287,15 @@ class HarnessJobCreateSerializer(serializers.Serializer):
         return attrs
 
 
-_LIVEKIT_ALIASES = ("LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET")
-_CONNECTOR_ALIASES = {
-    "livekit": _LIVEKIT_ALIASES,
+LIVEKIT_ALIASES = ("LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET")
+CONNECTOR_ALIASES = {
+    "livekit": LIVEKIT_ALIASES,
     "vapi": ("VAPI_API_KEY",),
     "retell": ("RETELL_API_KEY",),
 }
 
 
-def _missing_provider_credentials(agent):
+def missing_provider_credentials(agent):
     """Aliases the connector needs that the job does not carry.
 
     Mirrors the gateway's connector resolution: ``auto`` is satisfied by any one complete
@@ -306,13 +309,13 @@ def _missing_provider_credentials(agent):
     if connector == "auto":
         if any(
             all(alias in present for alias in aliases)
-            for aliases in _CONNECTOR_ALIASES.values()
+            for aliases in CONNECTOR_ALIASES.values()
         ):
             return []
         return ["one complete provider family: " + " | ".join(
-            "+".join(aliases) for aliases in _CONNECTOR_ALIASES.values()
+            "+".join(aliases) for aliases in CONNECTOR_ALIASES.values()
         )]
-    return [alias for alias in _CONNECTOR_ALIASES[connector] if alias not in present]
+    return [alias for alias in CONNECTOR_ALIASES[connector] if alias not in present]
 
 
 class HarnessJobActionSerializer(serializers.Serializer):
@@ -322,7 +325,7 @@ class HarnessJobActionSerializer(serializers.Serializer):
 
 
 class HarnessPreflightSerializer(HarnessJobCreateSerializer):
-    pass
+    reject_missing_credentials = False
 
 
 class HarnessJobAdjustmentSerializer(serializers.Serializer):
@@ -331,6 +334,31 @@ class HarnessJobAdjustmentSerializer(serializers.Serializer):
         max_length=2000,
         trim_whitespace=True,
         help_text="A user correction to apply at the next safe harness stage boundary.",
+    )
+    client_request_id = serializers.CharField(
+        max_length=128, required=False, allow_blank=False
+    )
+
+
+class HarnessJobExtendSerializer(serializers.Serializer):
+    # The finished-run chat box adds scenarios through an explicit "Add scenarios" action, so
+    # the request carries a structured ``count`` plus optional free-text ``guidance`` rather
+    # than prose we have to infer intent from. Rerun is a separate action, not this endpoint.
+    count = serializers.IntegerField(
+        min_value=1,
+        max_value=50,
+        help_text="How many new scenarios to add to the saved world.",
+    )
+    guidance = serializers.CharField(
+        max_length=2000,
+        trim_whitespace=True,
+        required=False,
+        allow_blank=True,
+        default="",
+        help_text=(
+            "Optional natural-language steering for the added scenarios (e.g. 'calm "
+            "first-time riders booking an airport pickup'). Existing scenarios are preserved."
+        ),
     )
     client_request_id = serializers.CharField(
         max_length=128, required=False, allow_blank=False

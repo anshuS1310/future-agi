@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import shlex
 import tarfile
 import tempfile
 from pathlib import Path
@@ -41,7 +42,7 @@ from simulate.services.hosted_harness import (
 from simulate.services.hosted_harness_gateway import (
     _SCENARIO_DIRECTORY_COUNT_COMMAND,
     _bundle_archive_for,
-    _hosted_scenario_repair_script,
+    _hosted_scenario_repair_command,
     _validate_egress_domains,
     authoring_stage_outputs_from_archive,
 )
@@ -252,17 +253,22 @@ def test_authoring_archive_reads_per_scenario_files_and_respects_run_count():
     ]
 
 
-def test_hosted_scenario_repair_script_requests_exact_missing_count_safely():
-    script = _hosted_scenario_repair_script(
-        name="hotel'); raise RuntimeError('unsafe",
-        expected=3,
-        actual=2,
+def test_hosted_scenario_repair_command_targets_exact_count_shell_safely():
+    unsafe_name = "hotel'); raise RuntimeError('unsafe"
+    command = _hosted_scenario_repair_command(name=unsafe_name, expected=3, actual=2)
+    # Talks to the harness's real CLI, non-interactively, against the reused authoring.
+    assert command.startswith("python -m fi.alk.harness.cli scenarios")
+    assert "--out /work/authoring" in command
+    assert "--count 3" in command
+    assert "--once" in command
+    instruction = (
+        "Exactly 3 scenarios are required, but 2 are saved. "
+        "Add exactly 1 distinct validated scenario(s) and preserve the existing ones."
     )
-
-    compile(script, "repair-scenarios.py", "exec")
-    assert "Add exactly 1 distinct validated scenario" in script
-    assert "count=3" in script
-    assert "name=\"hotel'); raise RuntimeError('unsafe\"" in script
+    assert f"--guidance {shlex.quote(instruction)}" in command
+    # Untrusted values reach the shell only via shlex.quote — no unescaped injection.
+    assert shlex.quote(unsafe_name) in command
+    assert "); raise RuntimeError(" not in command.replace(shlex.quote(unsafe_name), "")
     assert "-type d" in _SCENARIO_DIRECTORY_COUNT_COMMAND
     assert "ls " not in _SCENARIO_DIRECTORY_COUNT_COMMAND
 

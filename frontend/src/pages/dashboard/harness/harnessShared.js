@@ -180,8 +180,20 @@ export const shortRunId = (runId = "") => {
 // Authoring writes `metadata.name`, older jobs `metadata.agent_name`. Never fall back to the
 // job id: it reads as a name and search cannot match it. Callers whose slot cannot be blank
 // pass their own fallback.
-export const environmentName = (job, fallback = "\u2014") =>
-  job?.metadata?.agent_name || job?.metadata?.name || fallback;
+export const environmentName = (job, fallback = "\u2014") => {
+  const metadata = job?.metadata || {};
+  if (metadata.agent_name) return metadata.agent_name;
+  if (metadata.name) return metadata.name;
+  // Fall back to the source repo name (always present for github sources) so
+  // environments submitted without an explicit metadata.name — older jobs, API
+  // callers — read as a human name instead of a bare em-dash, per #2427's intent.
+  const repository = job?.source?.repository;
+  if (repository) {
+    const repoName = String(repository).split("/").filter(Boolean).pop();
+    if (repoName) return repoName;
+  }
+  return fallback;
+};
 
 // Four visual states for the run checklist.
 export const STAGE_STATE = {

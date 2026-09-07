@@ -198,7 +198,11 @@ def _scrub_deployment_telemetry_event(event: dict) -> dict:
     # though the inbound branch scrubbed the request body. Walk breadcrumbs
     # unconditionally and strip body fields whose ``url`` points at a telemetry
     # path before running the inbound scrub.
-    for breadcrumb in event.get("breadcrumbs", {}).get("values", []) or []:
+    # Error events carry ``{"values": [...]}``; transaction events carry a bare list.
+    breadcrumbs = event.get("breadcrumbs") or {}
+    if isinstance(breadcrumbs, dict):
+        breadcrumbs = breadcrumbs.get("values") or []
+    for breadcrumb in breadcrumbs:
         data = breadcrumb.get("data") or {}
         if _is_telemetry_url(data.get("url")):
             for key in ("body", "data", "http.request.body", "request_body"):

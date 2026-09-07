@@ -4,8 +4,11 @@ x-dev-worker: &dev-worker
   pull_policy: never
   volumes:
     - ./futureagi:/app/backend
+    - ${NLTK_DATA_ROOT:-/Users/rishavhada/nltk_data}:/usr/local/share/nltk_data:ro
   environment:
     FAST_STARTUP: "true"
+    # Async evaluations run in workers too, not only in the HTTP backend.
+    BILLING_CONFIG_PATH: /app/backend/ee/billing.yaml
 
 services:
   frontend:

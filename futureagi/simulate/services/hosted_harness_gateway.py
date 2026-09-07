@@ -107,9 +107,7 @@ def _platform_simulator_material() -> tuple[dict[str, str], bytes | None]:
             ) from exc
 
     provider = str(os.environ.get("SIMULATOR_LLM_PROVIDER") or "vertex").strip()
-    model = str(
-        os.environ.get("SIMULATOR_LLM_MODEL") or "gemini-2.5-flash"
-    ).strip()
+    model = str(os.environ.get("SIMULATOR_LLM_MODEL") or "gemini-2.5-flash").strip()
     location = str(os.environ.get("GOOGLE_CLOUD_LOCATION") or "global").strip()
     derived_backend = (
         "vertex-gemini"
@@ -159,9 +157,7 @@ def _platform_simulator_material() -> tuple[dict[str, str], bytes | None]:
     if project:
         values["GOOGLE_CLOUD_PROJECT"] = project
     if credential_bytes is not None:
-        values["GOOGLE_APPLICATION_CREDENTIALS"] = (
-            _SIMULATOR_VERTEX_CREDENTIALS_PATH
-        )
+        values["GOOGLE_APPLICATION_CREDENTIALS"] = _SIMULATOR_VERTEX_CREDENTIALS_PATH
     return values, credential_bytes
 
 
@@ -560,7 +556,9 @@ def _normalize_egress_domains(domains: Iterable[str]) -> set[str]:
     }
 
 
-_PRE_RUNTIME_STAGES = frozenset({"queued", "admitted", "acquiring_source", "understanding_agent"})
+_PRE_RUNTIME_STAGES = frozenset(
+    {"queued", "admitted", "acquiring_source", "understanding_agent"}
+)
 
 
 def _mark_stage(job: HostedHarnessJob, stage: str) -> None:
@@ -765,9 +763,9 @@ def _provider_egress_domains(secrets_map: Mapping[str, Any]) -> set[str]:
         for name in ("SIMULATOR_STT_PROVIDER", "SIMULATOR_TTS_PROVIDER")
         if str(values.get(name) or "").strip()
     }
-    selected_llm_provider = str(
-        values.get("SIMULATOR_LLM_PROVIDER") or ""
-    ).strip().lower()
+    selected_llm_provider = (
+        str(values.get("SIMULATOR_LLM_PROVIDER") or "").strip().lower()
+    )
     domains: set[str] = set()
     if aliases & {
         "GOOGLE_APPLICATION_CREDENTIALS_JSON",
@@ -846,9 +844,7 @@ def _resolved_egress_domains(
         customer_domains = [customer_domains]
     if callback_host:
         callback_host = _hostname_from_url(callback_host)
-    values: list[str] = [
-        domain for domain in base_domains if isinstance(domain, str)
-    ]
+    values: list[str] = [domain for domain in base_domains if isinstance(domain, str)]
     values.extend(_provider_egress_domains(target_secrets))
     values.extend(_provider_egress_domains(simulator_env))
     # The simulated caller rides the platform LiveKit server whenever the target connector does
@@ -899,9 +895,7 @@ def _known_simulator_egress_inputs() -> dict[str, str]:
         if raw:
             upper_alias = str(alias).upper()
             values[str(alias)] = (
-                raw
-                if "LOCATION" in upper_alias or "REGION" in upper_alias
-                else ""
+                raw if "LOCATION" in upper_alias or "REGION" in upper_alias else ""
             )
     for alias in _KNOWN_SIMULATOR_SECRET_ALIASES:
         if os.getenv(alias):
@@ -1145,8 +1139,7 @@ class DaytonaHostedGateway:
             **{
                 name: value
                 for name, value in simulator_env.items()
-                if name
-                not in {"LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET"}
+                if name not in {"LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET"}
             },
             "CLAUDE_CODE_USE_VERTEX": "1",
             "GOOGLE_GENAI_USE_VERTEXAI": "True",
@@ -2154,12 +2147,19 @@ class DaytonaHostedGateway:
             )
             retry_pending = self._should_retry(attempt, "infrastructure")
         elif exit_code != 0 and not attempt.terminal_event_received:
+            authoring_invalid = exit_code == 78
             attempt.terminal_stage = "failed"
             attempt.terminal_failure = {
-                "domain": "infrastructure",
-                "stage": "running",
-                "code": "guest_crashed",
-                "message": f"guest entrypoint exited {exit_code}",
+                "domain": "environment" if authoring_invalid else "infrastructure",
+                "stage": "validating_environment" if authoring_invalid else "running",
+                "code": "authoring_runtime_validation_failed"
+                if authoring_invalid
+                else "guest_crashed",
+                "message": (
+                    "Generated environment failed real-runtime validation after bounded repair"
+                    if authoring_invalid
+                    else f"guest entrypoint exited {exit_code}"
+                ),
                 "details": {
                     "guest_log_tail": observation.get("logs", ""),
                     "process_logs": observation.get("process_logs", ""),
@@ -2174,7 +2174,9 @@ class DaytonaHostedGateway:
                     "updated_at",
                 ]
             )
-            retry_pending = self._should_retry(attempt, "infrastructure")
+            retry_pending = not authoring_invalid and self._should_retry(
+                attempt, "infrastructure"
+            )
         elif exit_code == 0 and (
             not attempt.terminal_event_received or not attempt.manifest_acked
         ):
@@ -2527,9 +2529,11 @@ def prepare_dispatch_payload(
         if connector == "livekit"
         else (simulator_secrets or {}).get("LIVEKIT_URL")
     )
-    if connector in {"livekit", "vapi", "retell"} and not config.get(
-        "livekit_url"
-    ) and livekit_url:
+    if (
+        connector in {"livekit", "vapi", "retell"}
+        and not config.get("livekit_url")
+        and livekit_url
+    ):
         config["livekit_url"] = livekit_url
         agent["config"] = config
         dispatched["agent"] = agent

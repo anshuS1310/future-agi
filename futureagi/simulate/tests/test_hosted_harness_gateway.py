@@ -1143,7 +1143,8 @@ def test_reconcile_relaunches_infra_failure_until_budget_then_fails(
 
 
 @pytest.mark.django_db
-def test_reconcile_exit3_and_exit0_never_retry(organization, monkeypatch):
+@pytest.mark.parametrize("exit_code", [0, 3, 78])
+def test_reconcile_terminal_and_authoring_exits_never_retry(organization, monkeypatch, exit_code):
     from simulate.services.hosted_harness import record_cleanup
 
     payload = _payload()
@@ -1175,23 +1176,18 @@ def test_reconcile_exit3_and_exit0_never_retry(organization, monkeypatch):
         return_value=(b"archive", ""),
     )
 
-    # Exit 3 (fenced/superseded): never retried.
     with acquire:
         attempt = gateway.launch(job, endpoint_base_url="https://platform.example.com")
-    monkeypatch.setattr(gateway, "inspect", lambda _: {"exit_code": 3, "logs": ""})
+    monkeypatch.setattr(gateway, "inspect", lambda _: {"exit_code": exit_code, "logs": ""})
     assert gateway.reconcile_completed(attempt).state != (
         HostedHarnessJob.State.RETRY_WAIT
     )
     assert captured["retry_pending"] is False
 
-    # Exit 0 (terminal reached / verdict delivered): never retried.
-    with acquire:
-        attempt = gateway.launch(job, endpoint_base_url="https://platform.example.com")
-    monkeypatch.setattr(gateway, "inspect", lambda _: {"exit_code": 0, "logs": ""})
-    assert gateway.reconcile_completed(attempt).state != (
-        HostedHarnessJob.State.RETRY_WAIT
-    )
-    assert captured["retry_pending"] is False
+    if exit_code == 78:
+        attempt.refresh_from_db()
+        assert attempt.terminal_failure["domain"] == "environment"
+        assert attempt.terminal_failure["code"] == "authoring_runtime_validation_failed"
 
 
 @pytest.mark.django_db

@@ -67,30 +67,7 @@ class GCPServiceControlService:
             )
         return self._client
 
-    # def check(self, consumer_id: str, operation_id: str) -> list:
-    #     """Whether a consumer is still entitled. Returns any check errors.
-
-    #     The codelab calls this before reporting and skips the report when it
-    #     returns errors, which is a second signal alongside Pub/Sub that a
-    #     customer should lose access.
-    #     """
-    #     response = (
-    #         self.client.services()
-    #         .check(
-    #             serviceName=self.service_name,
-    #             body={
-    #                 "operation": {
-    #                     "operationId": operation_id,
-    #                     "operationName": "check",
-    #                     "consumerId": consumer_id,
-    #                 }
-    #             },
-    #         )
-    #         .execute()
-    #     )
-    #     return response.get("checkErrors") or []
-
-    def report(
+    def build_operation(
         self,
         consumer_id: str,
         operation_id: str,
@@ -98,13 +75,10 @@ class GCPServiceControlService:
         end_time: str,
         metric_values: dict[str, tuple[float, bool]],
         operation_name: str = "usage_report",
-        user_labels: dict[str, str] | None = None,
-    ) -> list:
-        """Report usage for one consumer and window. Returns any report errors.
+    ) -> dict:
+        """Build the operation sent to check and then to report.
 
-        An HTTP 200 does not mean the usage was accepted: per-operation failures
-        come back in reportErrors. Treating a 200 as success would mark usage
-        reported that Google rejected, and it would never be billed.
+        One operation for both calls, so what was checked is what gets billed.
         """
         # Only storage and voice simulation accept floating point. Sending a
         # double where Google expects an int64 is rejected per-operation.
@@ -120,7 +94,7 @@ class GCPServiceControlService:
             for metric_id, (value, is_float) in metric_values.items()
         ]
 
-        operation = {
+        return {
             "operationId": operation_id,
             "operationName": operation_name,
             "consumerId": consumer_id,
@@ -128,10 +102,48 @@ class GCPServiceControlService:
             "endTime": end_time,
             "metricValueSets": metric_value_sets,
         }
+
+    def check(self, operation: dict) -> list:
+        """Whether Google still considers this consumer entitled.
+
+        Returns any check errors. A non-empty list means the report must be
+        skipped: it is Google's live answer, independent of whether our Pub/Sub
+        consumer has kept the entitlement state current.
+        """
+        # check rejects userLabels. The caller passes the pre-report operation,
+        # but strip defensively so a future caller cannot break the check call.
+        body = {k: v for k, v in operation.items() if k != "userLabels"}
+
+        response = (
+            self.client.services()
+            .check(serviceName=self.service_name, body={"operation": body})
+            .execute()
+        )
+
+        errors = response.get("checkErrors") or []
+        if errors:
+            logger.warning(
+                "gcp_marketplace_check_errors",
+                consumer_id=operation.get("consumerId"),
+                operation_id=operation.get("operationId"),
+                errors=errors,
+            )
+        return errors
+
+    def report(
+        self, operation: dict, user_labels: dict[str, str] | None = None
+    ) -> list:
+        """Report one checked operation. Returns any report errors.
+
+        An HTTP 200 does not mean the usage was accepted: per-operation failures
+        come back in reportErrors. Treating a 200 as success would mark usage
+        reported that Google rejected, and it would never be billed.
+        """
         # Forwarded to the customer's Cloud Billing cost-management tools for
-        # attribution. Omitted entirely when empty rather than sent as {}.
+        # attribution, and accepted by report but not by check. Omitted entirely
+        # when empty rather than sent as {}.
         if user_labels:
-            operation["userLabels"] = user_labels
+            operation = {**operation, "userLabels": user_labels}
 
         body = {"operations": [operation]}
 
@@ -145,8 +157,8 @@ class GCPServiceControlService:
         if errors:
             logger.error(
                 "gcp_marketplace_report_errors",
-                consumer_id=consumer_id,
-                operation_id=operation_id,
+                consumer_id=operation.get("consumerId"),
+                operation_id=operation.get("operationId"),
                 errors=errors,
             )
         return errors

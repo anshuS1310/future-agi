@@ -63,6 +63,21 @@ def _org_label(entitlement) -> str:
     return slug or str(entitlement.organization_id)
 
 
+# Reserved Marketplace label key. Free-form keys are accepted but ignored: only
+# the reserved ones reach the customer's Cloud Billing cost breakdown. The other
+# is cloudmarketplace.googleapis.com/resource_name, unused for now.
+CONTAINER_LABEL = "cloudmarketplace.googleapis.com/container_name"
+
+
+def _cost_attribution(entitlement) -> dict[str, str]:
+    """Labels letting the customer attribute this charge inside their own org.
+
+    Only the container is sent. UsageSummary is keyed on organization, so there
+    is no finer resource to name until usage is tracked per workspace.
+    """
+    return {CONTAINER_LABEL: _org_label(entitlement).lower()[:63]}
+
+
 def _already_reported(entitlement, dimension: str, period: str) -> Decimal:
     """Sum of what we have already sent for this metric in this period.
 
@@ -194,18 +209,34 @@ def report_entitlement_usage(entitlement: GCPMarketplaceEntitlement) -> int:
         f"_{_rfc3339(window_start)}_{_rfc3339(now)}"
     )
 
+    operation = gcp_service_control.build_operation(
+        consumer_id=entitlement.usage_reporting_id,
+        operation_id=operation_id,
+        start_time=_rfc3339(window_start),
+        end_time=_rfc3339(now),
+        metric_values=metric_values,
+        operation_name=operation_name,
+    )
+
+    try:
+        check_errors = gcp_service_control.check(operation)
+    except Exception as exc:
+        _mark(checkpoints, GCPUsageReportStatus.FAILED, str(exc))
+        raise
+
+    if check_errors:
+        # Nothing is lost by stopping here. The delta is computed from REPORTED
+        # checkpoints only, so this window folds into the next successful one.
+        _mark(checkpoints, GCPUsageReportStatus.FAILED, str(check_errors))
+        logger.warning(
+            "gcp_marketplace_usage_skipped_check_failed",
+            entitlement_id=entitlement.entitlement_id,
+        )
+        return 0
+
     try:
         errors = gcp_service_control.report(
-            consumer_id=entitlement.usage_reporting_id,
-            operation_id=operation_id,
-            start_time=_rfc3339(window_start),
-            end_time=_rfc3339(now),
-            metric_values=metric_values,
-            operation_name=operation_name,
-            user_labels={
-                "environment": settings.ENV_TYPE,
-                "region": settings.REGION,
-            },
+            operation, user_labels=_cost_attribution(entitlement)
         )
     except Exception as exc:
         _mark(checkpoints, GCPUsageReportStatus.FAILED, str(exc))

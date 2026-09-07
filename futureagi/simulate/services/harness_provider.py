@@ -269,6 +269,61 @@ def _scenario_status(reg: HostedHarnessScenario) -> str | None:
     return receipt or "running"
 
 
+def _connector_credential_readiness(payload):
+    """Readiness report the create form renders: which target aliases are still missing.
+
+    Same rule as create's hard reject (``missing_provider_credentials``), expressed as
+    requirements so preflight can name them instead of refusing before the user knows.
+    """
+    from simulate.serializers.harness_job import (
+        CONNECTOR_ALIASES,
+        missing_provider_credentials,
+    )
+
+    agent = payload["agent"]
+    connector = agent["connector"]
+    remote = payload["source"]["kind"] == "remote"
+    missing = [] if remote else missing_provider_credentials(agent)
+    present = {str(name).upper() for name in (agent.get("secret_refs") or {})}
+    config = agent.get("config") or {}
+    if str(config.get("livekit_url") or config.get("LIVEKIT_URL") or "").strip():
+        present.add("LIVEKIT_URL")
+    families = (
+        list(CONNECTOR_ALIASES.values())
+        if connector == "auto"
+        else [CONNECTOR_ALIASES[connector]]
+    )
+    requirements = [
+        {
+            "environment_name": alias,
+            "purpose": "target_provider",
+            "required": not remote,
+            "status": "configured" if alias in present else "missing",
+        }
+        for aliases in families
+        for alias in aliases
+    ]
+    choices = []
+    if connector == "auto" and not remote:
+        choices.append(
+            {
+                "id": "target_provider",
+                "purpose": "Target provider credentials",
+                "satisfied": not missing,
+                "options": [list(aliases) for aliases in families],
+            }
+        )
+    return {
+        "missing": missing,
+        "report": {
+            "scanned_files": 0,
+            "detected_connectors": [] if connector == "auto" else [connector],
+            "requirements": requirements,
+            "credential_choices": choices,
+        },
+    }
+
+
 class DaytonaHarnessProvider:
     """Platform-as-gateway. Persists the job and drives Daytona via Temporal."""
 
@@ -354,9 +409,11 @@ class DaytonaHarnessProvider:
         except HostedHarnessError as exc:
             return Response(exc.as_dict(), status=exc.status_code)
         runtime = payload["runtime"]
+        credentials = _connector_credential_readiness(payload)
         return Response(
             {
-                "ready_to_submit": True,
+                "ready_to_submit": not credentials["missing"],
+                "credentials": credentials["report"],
                 "effective_parallelism": runtime["parallelism"],
                 "snapshot": {
                     "name": getattr(settings, "ALK_DAYTONA_SNAPSHOT", None),

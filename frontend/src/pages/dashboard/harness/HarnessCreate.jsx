@@ -174,6 +174,9 @@ export default function HarnessCreate() {
   const [providerTargetId, setProviderTargetId] = useState("");
   const [scenarioCount, setScenarioCount] = useState(10);
   const [preflight, setPreflight] = useState(null);
+  // Shown beside the Preflight button: the general error banner sits at the foot of the
+  // form, out of view when the button is what was clicked.
+  const [preflightError, setPreflightError] = useState("");
   // A changed input does not invalidate what preflight already told us — it just means the
   // answer may be out of date. Hiding the panel loses the findings the user was reading.
   const [preflightDirty, setPreflightDirty] = useState(false);
@@ -346,6 +349,7 @@ export default function HarnessCreate() {
   const inspect = async () => {
     setChecking(true);
     setError("");
+    setPreflightError("");
     try {
       const value = await preflightHarnessJob(
         hostedPayload(pendingEnvironmentRefs()),
@@ -353,7 +357,7 @@ export default function HarnessCreate() {
       setPreflight(value);
       setPreflightDirty(false);
     } catch (requestError) {
-      setError(errorMessage(requestError));
+      setPreflightError(errorMessage(requestError));
     } finally {
       setChecking(false);
     }
@@ -910,6 +914,11 @@ export default function HarnessCreate() {
                       : "Select an agent source to check its requirements."}
                   </Typography>
                 </Stack>
+                {preflightError && (
+                  <Alert severity="error" variant="outlined">
+                    {preflightError}
+                  </Alert>
+                )}
 
                 {preflight && (
                   <Stack spacing={1.5} sx={{ mt: 2 }}>

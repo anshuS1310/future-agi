@@ -167,6 +167,35 @@ def test_daytona_preflight_rejects_known_egress_overflow(settings):
     assert response.data["error"] == "egress_domain_limit_exceeded"
 
 
+def test_daytona_preflight_reports_missing_target_credentials_instead_of_rejecting(settings):
+    settings.ALK_HOSTED_BASE_EGRESS_DOMAINS = []
+    settings.ALK_HOSTED_SIMULATOR_SECRET_ENV = {}
+    payload = _v1_payload()
+    payload["agent"] = {"connector": "auto", "config": {}, "secret_refs": {}}
+    request = SimpleNamespace(
+        validated_data=payload,
+        build_absolute_uri=lambda _path: "https://harness.example.test/",
+    )
+
+    response = DaytonaHarnessProvider().preflight(request)
+
+    assert response.status_code == 200
+    assert response.data["ready_to_submit"] is False
+    choice = response.data["credentials"]["credential_choices"][0]
+    assert choice["satisfied"] is False
+    assert ["VAPI_API_KEY"] in choice["options"]
+    assert {
+        item["environment_name"]
+        for item in response.data["credentials"]["requirements"]
+        if item["status"] == "missing"
+    } >= {"LIVEKIT_URL", "VAPI_API_KEY", "RETELL_API_KEY"}
+
+    payload["agent"]["secret_refs"] = _LIVEKIT_REFS
+    ready = DaytonaHarnessProvider().preflight(request)
+    assert ready.data["ready_to_submit"] is True
+    assert ready.data["credentials"]["credential_choices"][0]["satisfied"] is True
+
+
 @pytest.mark.django_db
 def test_daytona_create_rejects_known_egress_overflow_before_persisting(
     user, workspace, settings

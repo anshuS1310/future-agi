@@ -5029,6 +5029,25 @@ class TestAlkVoiceCsatScoring:
         # eval-derived overall_score must not be clobbered
         assert call.overall_score == 3.0
 
+    def test_scores_the_recording_at_an_address_a_server_can_fetch(
+        self, auth_client, run_test
+    ):
+        """An unreachable URL is sniffed as text, so the judge scores a link, not the call."""
+        from simulate.tasks import alk_sim
+
+        call = self._completed_voice_call(auth_client, run_test)
+
+        with (
+            patch("simulate.tasks.alk_sim.close_old_connections"),
+            patch.object(
+                alk_sim, "server_reachable_url", return_value="http://minio:9000/rec.wav"
+            ),
+            patch.object(alk_sim, "_run_agent_csat", return_value=8.0) as scorer,
+        ):
+            alk_sim.calculate_alk_voice_csat_score._original_func(str(call.id))
+
+        scorer.assert_called_once_with("http://minio:9000/rec.wav")
+
     def test_idempotent_on_existing_csat_score(self, auth_client, run_test):
         from simulate.tasks import alk_sim
 

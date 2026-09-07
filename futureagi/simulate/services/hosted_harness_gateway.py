@@ -150,6 +150,8 @@ def _platform_simulator_material() -> tuple[dict[str, str], bytes | None]:
         "ALK_BACKGROUND_NOISE",
         "ALK_BACKGROUND_NOISE_CATALOG",
         "HARNESS_BACKGROUND_NOISE_VOLUME",
+        # Off has to travel: decided here, enforced inside the sandbox.
+        "ALK_VOICEMAIL_SCENARIOS",
     ):
         value = str(os.environ.get(name) or "").strip()
         if value:
@@ -1238,8 +1240,7 @@ class DaytonaHostedGateway:
             attempts = max(
                 1, int(getattr(settings, "ALK_HOSTED_AUTHORING_ATTEMPTS", 3))
             )
-            # Settings owns this and derives it from the authoring budget. The old inline default
-            # was shorter than that budget, so it, not the budget, decided when a suite died.
+            # Settings derives this from the authoring budget.
             run_timeout = int(
                 getattr(settings, "ALK_HOSTED_AUTHORING_TIMEOUT", 0)
                 or int(
@@ -1403,7 +1404,7 @@ class DaytonaHostedGateway:
             else ({}, "")
         )
         dispatch_payload = prepare_dispatch_payload(
-            payload, secrets_map, simulator_secrets=simulator_env
+            payload, secrets_map, simulator_secrets=simulator_env, job=job
         )
         platform_host = _hostname_from_url(endpoint_base_url)
         allowed_domains = _resolved_egress_domains(
@@ -1599,6 +1600,8 @@ class DaytonaHostedGateway:
                     "ALK_HARNESS",
                     "ALK_HARNESS_MODEL",
                     "ALK_VERTEX_LOCATION",
+                    # Authoring writes the scenarios, so the switch is exported here too.
+                    "ALK_VOICEMAIL_SCENARIOS",
                     "GOOGLE_APPLICATION_CREDENTIALS",
                     "GOOGLE_CLOUD_LOCATION",
                     "GOOGLE_CLOUD_PROJECT",
@@ -2502,6 +2505,7 @@ def prepare_dispatch_payload(
     secrets_map: dict[str, str],
     *,
     simulator_secrets: dict[str, str] | None = None,
+    job: Any = None,
 ) -> dict[str, Any]:
     """Add non-secret connector configuration derived from run-scoped secrets.
 
@@ -2529,7 +2533,54 @@ def prepare_dispatch_payload(
         config["livekit_url"] = livekit_url
         agent["config"] = config
         dispatched["agent"] = agent
+    if job is not None:
+        offered = _offered_eval_catalogue(job)
+        if offered:
+            # Offered, not required: a guest that ignores it selects nothing.
+            metadata = dict(dispatched.get("metadata") or {})
+            metadata["available_evals"] = offered
+            dispatched["metadata"] = metadata
     return dispatched
+
+
+def _offered_eval_catalogue(job: Any) -> list[dict[str, Any]]:
+    """The platform evals this job may select, filtered to its own modality and tenant."""
+    from simulate.services.harness_evals import offered_evals
+
+    try:
+        authored = _authored_modality(job)
+        if authored:
+            return offered_evals(job.organization, job.workspace, authored)
+        # No contract yet at launch, so offer both sets and mark a shared name `any`.
+        by_name: dict[str, dict[str, Any]] = {}
+        for modality in ("voice", "text"):
+            for entry in offered_evals(job.organization, job.workspace, modality):
+                name = str(entry.get("name"))
+                if name in by_name:
+                    by_name[name] = {**by_name[name], "modality": "any"}
+                    continue
+                by_name[name] = dict(entry)
+        return list(by_name.values())
+    except Exception:  # noqa: BLE001 - a catalogue is an offer; never fail a launch over it
+        logger.exception("harness_eval_catalogue_failed", job_id=str(job.id))
+        return []
+
+
+def _authored_modality(job: Any) -> str:
+    """Voice or text where a contract has been authored, empty where none exists yet.
+
+    Empty is the ordinary case at launch on a fresh run and must stay distinguishable from a
+    contract that really says text, or a voice run is filtered down to the wrong catalogue.
+    """
+    for output in job.stage_outputs or []:
+        if not isinstance(output, dict) or output.get("kind") != "contract":
+            continue
+        data = output.get("data")
+        if isinstance(data, dict):
+            authored = str(data.get("modality") or "").lower()
+            if authored in {"text", "voice"}:
+                return authored
+    return ""
 
 
 def _secret_safe(value: Any, *, key: str = "") -> Any:

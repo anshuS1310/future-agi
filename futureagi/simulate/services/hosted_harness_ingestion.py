@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from uuid import UUID
 import hashlib
 import json
 import logging
@@ -769,7 +770,9 @@ def _apply_receipt_to_call(
         _apply_conversation_metrics,
         _apply_harness_evaluation_outputs,
         _dispatch_csat_once,
+        _dispatch_evaluations_once,
     )
+    from simulate.services.harness_evals import runnable_eval_config_ids
 
     _apply_harness_evaluation_outputs(call)
     update_fields.append("eval_outputs")
@@ -816,9 +819,26 @@ def _apply_receipt_to_call(
         _ensure_run_agent_is_voice(registration.job)
     if call.status == CallExecution.CallStatus.COMPLETED:
         call_id = call.id
+        run_test_id = getattr(call.test_execution, "run_test_id", None)
         transaction.on_commit(
             lambda: _dispatch_csat_once(CallExecution.objects.get(id=call_id))
         )
+        # A hosted receipt never travels the SDK result path, so dispatch here, after commit.
+        try:
+            selected = (
+                runnable_eval_config_ids(run_test_id)
+                if isinstance(run_test_id, (str, UUID))
+                else []
+            )
+        except Exception:  # noqa: BLE001 - a receipt is never lost over what it schedules next
+            logger.exception("harness_eval_selection_lookup_failed", call_id=str(call_id))
+            selected = []
+        if selected:
+            transaction.on_commit(
+                lambda: _dispatch_evaluations_once(
+                    CallExecution.objects.get(id=call_id), eval_config_ids=selected
+                )
+            )
 
 
 def _ensure_run_agent_is_voice(job: HostedHarnessJob) -> None:
@@ -835,9 +855,30 @@ def _ensure_run_agent_is_voice(job: HostedHarnessJob) -> None:
     if run_test is None:
         return
     agent = run_test.agent_definition
-    if agent is not None and agent.agent_type != AgentDefinition.AgentTypeChoices.VOICE:
+    if agent is None:
+        return
+    if agent.agent_type != AgentDefinition.AgentTypeChoices.VOICE:
+        fields = ["agent_type", "updated_at"]
         agent.agent_type = AgentDefinition.AgentTypeChoices.VOICE
-        agent.save(update_fields=["agent_type", "updated_at"])
+        # Only the generated placeholder is rewritten, never a recorded prompt.
+        if str(agent.description or "").startswith("SDK-provisioned text agent"):
+            agent.description = "SDK-provisioned voice agent (ALK ingestion)."
+            fields.insert(1, "description")
+        agent.save(update_fields=fields)
+    # Pre-allocated rows carry call_channel chat, which reads a voice call as chat.
+    stale = [
+        call
+        for call in CallExecution.no_workspace_objects.filter(
+            test_execution__run_test_id=run_test.id, deleted=False
+        )
+        if (call.call_metadata or {}).get("call_channel") == "chat"
+    ]
+    for call in stale:
+        metadata = dict(call.call_metadata or {})
+        metadata["call_channel"] = "livekit"
+        call.call_metadata = metadata
+    if stale:
+        CallExecution.no_workspace_objects.bulk_update(stale, ["call_metadata"])
 
 
 def _call_lifecycle_status(body: dict[str, Any]) -> str:

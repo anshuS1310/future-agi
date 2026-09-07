@@ -196,6 +196,12 @@ class HarnessScenarioProvisionSerializer(serializers.Serializer):
     personas = HarnessProvisionPersonaSerializer(many=True, allow_empty=False)
     agent_definition_id = serializers.UUIDField(required=False, allow_null=True)
     agent_name = serializers.CharField(required=False, allow_blank=True, max_length=255)
+    # Without this, any eval binding agent_prompt scores against an empty string.
+    agent_prompt = serializers.CharField(required=False, allow_blank=True)
+    # Names only; the platform owns the mapping.
+    chosen_evals = serializers.ListField(
+        child=serializers.CharField(max_length=2000), required=False
+    )
 
     def validate_personas(self, personas):
         keys = [persona["scenario_key"] for persona in personas]
@@ -220,6 +226,11 @@ class HarnessScenarioOperationSerializer(serializers.Serializer):
     personas = HarnessProvisionPersonaSerializer(many=True, required=False)
     agent_definition_id = serializers.UUIDField(required=False, allow_null=True)
     agent_name = serializers.CharField(required=False, allow_blank=True, max_length=255)
+    # Also needed here: reject_unknown_fields checks this serializer's names first.
+    agent_prompt = serializers.CharField(required=False, allow_blank=True)
+    chosen_evals = serializers.ListField(
+        child=serializers.CharField(max_length=2000), required=False
+    )
     run_test_id = serializers.UUIDField(required=False)
     scenario_keys = serializers.ListField(
         child=serializers.CharField(max_length=255), required=False

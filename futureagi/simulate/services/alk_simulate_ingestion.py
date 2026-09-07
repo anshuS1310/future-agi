@@ -744,7 +744,9 @@ def ingest_alk_sim_result(
         # null score.
         _dispatch_csat_once(call_execution)
         call_metadata = call_execution.call_metadata or {}
-        if "harness_evaluations" in call_metadata:
+        # Dispatched only once the row is COMPLETED, with the config ids chosen at provision.
+        selected_eval_config_ids = _selected_eval_config_ids(call_execution)
+        if "harness_evaluations" in call_metadata and not selected_eval_config_ids:
             # An ALK harness result already contains the execution-backed
             # checks. Starting the platform evaluator as well leaves the call
             # permanently `eval_started` when no platform eval templates are
@@ -755,7 +757,9 @@ def ingest_alk_sim_result(
             call_execution.call_metadata = call_metadata
             call_execution.save(update_fields=["call_metadata"])
         else:
-            eval_dispatched = _dispatch_evaluations_once(call_execution)
+            eval_dispatched = _dispatch_evaluations_once(
+                call_execution, eval_config_ids=selected_eval_config_ids or None
+            )
 
     _roll_up_external_execution(call_execution.test_execution_id)
 
@@ -846,6 +850,7 @@ def _roll_up_external_execution(test_execution_id) -> None:
         if calls.filter(status=CallExecution.CallStatus.COMPLETED).exists()
         else TestExecution.ExecutionStatus.FAILED
     )
+    # Transport, not verdicts; scenario outcomes are counted on the job.
     completed_calls = calls.filter(status=CallExecution.CallStatus.COMPLETED).count()
     failed_calls = calls.filter(
         status__in=(
@@ -938,6 +943,13 @@ def _call_execution_key(call_execution: CallExecution) -> tuple[str, str | None]
     )
 
 
+def _simulator_llm_model() -> str:
+    """The model the simulated caller runs on, so the stored value matches the one that spoke."""
+    import os
+
+    return str(os.environ.get("SIMULATOR_LLM_MODEL") or "gpt-4").strip()
+
+
 def _resolve_simulator_agent(scenario, run_test, selected_version) -> SimulatorAgent:
     simulator_agent = scenario.simulator_agent or run_test.simulator_agent
     if simulator_agent is not None:
@@ -948,7 +960,7 @@ def _resolve_simulator_agent(scenario, run_test, selected_version) -> SimulatorA
         prompt=fallback_prompt,
         voice_provider="livekit",
         voice_name="alk-simulator",
-        model="gpt-4",
+        model=_simulator_llm_model(),
         llm_temperature=0.7,
         initial_message="Hi!",
         max_call_duration_in_minutes=30,
@@ -995,6 +1007,7 @@ def _build_call_execution(
             "dataset_id": row_data_info.get("dataset_id"),
             "base_prompt": base_prompt,
             "agent_description": agent_definition.description,
+            "agent_prompt": agent_definition.description,
             "dynamic_prompt": row_data_info.get("dynamic_prompt"),
             "language": "en",
             "initial_message": simulator_agent.initial_message,
@@ -1344,10 +1357,12 @@ def _apply_conversation_metrics(call_execution: CallExecution) -> None:
     ]
     full_user_count = full_metric_roles.count("user")
     full_bot_count = full_metric_roles.count("bot")
+    # message_count is every message; turn_count and agent_turn_count are the agent's only.
     detailed_data.update(
         {
             "message_count": len(full_metric_roles),
             "turn_count": full_bot_count,
+            "agent_turn_count": full_bot_count,
             "user_message_count": full_user_count,
             "bot_message_count": full_bot_count,
         }
@@ -1596,7 +1611,19 @@ def _dispatch_csat_once(call_execution: CallExecution) -> None:
         call_execution.save(update_fields=["call_metadata"])
 
 
-def _dispatch_evaluations_once(call_execution: CallExecution) -> bool:
+def _selected_eval_config_ids(call_execution: CallExecution) -> list[str]:
+    """Platform evals this run selected, empty when it selected none."""
+    from simulate.services.harness_evals import runnable_eval_config_ids
+
+    run_test_id = getattr(call_execution.test_execution, "run_test_id", None)
+    if not run_test_id:
+        return []
+    return runnable_eval_config_ids(run_test_id)
+
+
+def _dispatch_evaluations_once(
+    call_execution: CallExecution, eval_config_ids: list[str] | None = None
+) -> bool:
     call_metadata = call_execution.call_metadata or {}
     if call_metadata.get("eval_started"):
         return False
@@ -1604,7 +1631,9 @@ def _dispatch_evaluations_once(call_execution: CallExecution) -> bool:
     call_execution.call_metadata = call_metadata
     call_execution.save(update_fields=["call_metadata"])
     try:
-        _run_simulate_evaluations_task.apply_async(args=(str(call_execution.id),))
+        _run_simulate_evaluations_task.apply_async(
+            args=(str(call_execution.id), eval_config_ids)
+        )
         return True
     except Exception as dispatch_error:
         logger.exception(

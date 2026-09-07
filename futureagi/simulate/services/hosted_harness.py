@@ -359,7 +359,7 @@ def provision_scenarios(
         incoming_agent_name = payload.get("agent_name")
         if not incoming_agent_name or incoming_agent_name == "alk-sdk-agent":
             incoming_agent_name = _derive_agent_name_from_job(job)
-        run_test, scenarios, _ = provision_alk_sim_run_test(
+        run_test, scenarios, agent_definition = provision_alk_sim_run_test(
             job.organization,
             workspace=job.workspace,
             name=run_name,
@@ -398,7 +398,94 @@ def provision_scenarios(
             )
             for persona, scenario in zip(payload["personas"], scenarios, strict=True)
         ]
+        _record_target_agent_facts(locked, agent_definition, payload)
+        _select_platform_evals(locked, run_test, payload, modality)
     return _provision_response(locked, registrations)
+
+
+def _target_agent_prompt(job: HostedHarnessJob, payload: dict[str, Any]) -> str:
+    """The target agent's instructions: the guest's own prompt, else the contract excerpt."""
+    supplied = str(payload.get("agent_prompt") or "").strip()
+    if supplied:
+        return supplied
+    return str(_authored_contract_data(job).get("system_prompt_excerpt") or "").strip()
+
+
+def _authored_contract_data(job: HostedHarnessJob) -> dict[str, Any]:
+    """The authored contract body, or empty before the contract stage has landed."""
+    for output in job.stage_outputs or []:
+        if not isinstance(output, dict) or output.get("kind") != "contract":
+            continue
+        data = output.get("data")
+        if isinstance(data, dict):
+            return data
+    return {}
+
+
+def _record_target_agent_facts(
+    job: HostedHarnessJob, agent_definition, payload: dict[str, Any]
+) -> None:
+    """Record the target agent's prompt and identity where the platform already looks.
+
+    `agent_prompt` in an eval mapping resolves from the agent version's configuration snapshot,
+    and that snapshot takes its ``description`` from the agent definition, so the definition's
+    description is the platform's own home for an agent's instructions. Without a version row
+    there is nothing for the mapping to read and nothing for the UI to show.
+    """
+    changed: list[str] = []
+    prompt = _target_agent_prompt(job, payload)
+    if prompt and agent_definition.description != prompt:
+        agent_definition.description = prompt
+        changed.append("description")
+    # model and language are left alone: the contract carries neither.
+    connector = str((job.payload.get("agent") or {}).get("connector") or "").lower()
+    if connector in {"livekit", "vapi", "retell"} and not agent_definition.provider:
+        agent_definition.provider = connector
+        changed.append("provider")
+    authored = _authored_contract_data(job)
+    named = str(authored.get("agent") or "").strip()
+    if named and agent_definition.agent_name == "alk-sdk-agent":
+        agent_definition.agent_name = named[:255]
+        changed.append("agent_name")
+    direction = str(authored.get("call_direction") or "").strip().lower()
+    if direction in {"inbound", "outbound"}:
+        inbound = direction == "inbound"
+        if agent_definition.inbound != inbound:
+            agent_definition.inbound = inbound
+            changed.append("inbound")
+    if changed:
+        agent_definition.save(update_fields=[*changed, "updated_at"])
+    if prompt and agent_definition.latest_version is None:
+        agent_definition.create_version(
+            description=prompt,
+            commit_message="hosted harness target agent prompt",
+            status="active",
+        )
+
+
+def _select_platform_evals(
+    job: HostedHarnessJob,
+    run_test,
+    payload: dict[str, Any],
+    modality: str,
+) -> None:
+    """Bind the guest's chosen platform evals to this run, or refuse an unknown name."""
+    from simulate.services.harness_evals import (
+        UnknownEvalSelection,
+        create_selected_eval_configs,
+    )
+
+    chosen = payload.get("chosen_evals") or []
+    if not chosen:
+        return
+    try:
+        create_selected_eval_configs(run_test, list(chosen), modality)
+    except UnknownEvalSelection as unknown:
+        raise HostedHarnessError(
+            "eval_selection_unknown",
+            f"eval template(s) not available to this organization: {unknown}",
+            status_code=400,
+        ) from unknown
 
 
 def _resolve_scenario_modality(

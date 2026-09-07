@@ -14,11 +14,12 @@ identical CSAT rule prompt, so scores are consistent across paths.
 from __future__ import annotations
 
 import structlog
-from django.db import close_old_connections
+from django.db import close_old_connections, transaction
 
 from simulate.constants.csat_score_prompt import CSAT_SCORE_PROMPT
 from simulate.models import CallExecution
 from tfc.temporal.drop_in import temporal_activity
+from tfc.utils.storage_client import server_reachable_url
 
 logger = structlog.get_logger(__name__)
 
@@ -89,7 +90,8 @@ def _score_from_recording(call: CallExecution) -> float | None:
     """
     if not call.recording_url:
         return None
-    score = _run_agent_csat(call.recording_url)
+    # Addressed for a server-side fetch; an unreachable URL is sniffed as text and scored as a link.
+    score = _run_agent_csat(server_reachable_url(call.recording_url))
     if score is None:
         logger.warning("alk_csat_recording_failed", call_execution_id=str(call.id))
     return score
@@ -178,11 +180,15 @@ def _set_csat_state(
     status: str,
     error: str = "",
 ) -> None:
-    metadata = dict(call.call_metadata or {})
-    metadata["csat_status"] = status
-    if error:
-        metadata["csat_error"] = error[:2000]
-    else:
-        metadata.pop("csat_error", None)
+    """Record where CSAT reached, re-reading the row so a stale copy cannot revert the eval flags."""
+    with transaction.atomic():
+        locked = CallExecution.objects.select_for_update().get(id=call.id)
+        metadata = dict(locked.call_metadata or {})
+        metadata["csat_status"] = status
+        if error:
+            metadata["csat_error"] = error[:2000]
+        else:
+            metadata.pop("csat_error", None)
+        locked.call_metadata = metadata
+        locked.save(update_fields=["call_metadata"])
     call.call_metadata = metadata
-    call.save(update_fields=["call_metadata"])

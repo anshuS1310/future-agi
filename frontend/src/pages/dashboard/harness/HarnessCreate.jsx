@@ -197,6 +197,9 @@ export default function HarnessCreate() {
   const [providerTargetId, setProviderTargetId] = useState("");
   const [providerDynamicVariables, setProviderDynamicVariables] = useState("");
   const [scenarioCount, setScenarioCount] = useState(10);
+  // Per call, not per run. Left blank the run keeps whatever the contract derived, so an
+  // agent whose calls are known to be long is not silently held to a shorter default.
+  const [callTimeoutSeconds, setCallTimeoutSeconds] = useState("");
   const [preflight, setPreflight] = useState(null);
   // Shown beside the Preflight button: the general error banner sits at the foot of the
   // form, out of view when the button is what was clicked.
@@ -307,6 +310,10 @@ export default function HarnessCreate() {
         : {}),
       config: {
         ...configurationValues,
+        ...(String(callTimeoutSeconds).trim() &&
+        Number(callTimeoutSeconds) > 0
+          ? { voice_call_timeout_seconds: Number(callTimeoutSeconds) }
+          : {}),
         ...(connector === "vapi" && providerMode === "connect_only"
           ? { assistant_id: providerTargetId.trim() }
           : {}),
@@ -1416,6 +1423,31 @@ export default function HarnessCreate() {
                     Each scenario is one generated conversation the agent is put
                     through, then graded. More scenarios means broader coverage
                     and a longer run.
+                  </Typography>
+                </Stack>
+                <Stack
+                  direction={{ xs: "column", sm: "row" }}
+                  spacing={1.5}
+                  alignItems={{ sm: "center" }}
+                  sx={{ mt: 2 }}
+                >
+                  <TextField
+                    size="small"
+                    label="Call limit (seconds)"
+                    type="number"
+                    value={callTimeoutSeconds}
+                    onChange={(event) =>
+                      setCallTimeoutSeconds(event.target.value)
+                    }
+                    inputProps={{ min: 30, max: 3600 }}
+                    placeholder="default"
+                    sx={{ width: 180, flexShrink: 0 }}
+                  />
+                  <Typography variant="caption" color="text.secondary">
+                    How long a single call may run before it is stopped. Leave
+                    blank to keep the default for this agent. A call cut off at
+                    the limit ends without a natural closing, so raise it for an
+                    agent that works through long forms.
                   </Typography>
                 </Stack>
               </Section>

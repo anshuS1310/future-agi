@@ -53,3 +53,21 @@ describe("canStartEndToEndRun", () => {
     ).toBe(false);
   });
 });
+
+describe("per-call limit", () => {
+  it("omits the call limit when the field is left blank", () => {
+    // A blank field must change nothing: the run keeps whatever the contract derived, so an agent
+    // whose calls are legitimately long is not silently held to a shorter default.
+    const buildConfig = (callTimeoutSeconds) => ({
+      ...(String(callTimeoutSeconds).trim() && Number(callTimeoutSeconds) > 0
+        ? { voice_call_timeout_seconds: Number(callTimeoutSeconds) }
+        : {}),
+    });
+
+    expect(buildConfig("")).toEqual({});
+    expect(buildConfig("   ")).toEqual({});
+    expect(buildConfig("0")).toEqual({});
+    expect(buildConfig("600")).toEqual({ voice_call_timeout_seconds: 600 });
+    expect(buildConfig(900)).toEqual({ voice_call_timeout_seconds: 900 });
+  });
+});

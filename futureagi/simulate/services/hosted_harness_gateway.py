@@ -454,58 +454,6 @@ def detect_source_connectors(archive: bytes) -> tuple[list[str], int]:
     return sorted(found), scanned
 
 
-def reject_missing_provider_credentials(
-    payload: Mapping[str, Any], detected_connectors: Iterable[str]
-) -> None:
-    """Fail an ``auto`` run whose source names a voice provider it carries no credentials for.
-
-    Raised before any sandbox exists so a run that can only end in ``spawn_failed`` at connect
-    time never pays for authoring. ``remote`` sources own their credentials and are exempt.
-    """
-    from simulate.serializers.harness_job import missing_provider_credentials
-
-    if payload["source"]["kind"] == "remote":
-        return
-    detected = list(detected_connectors)
-    missing = missing_provider_credentials(payload["agent"], detected)
-    if not missing:
-        return
-    raise HostedHarnessError(
-        "provider_credentials_missing",
-        f"the source uses {', '.join(detected)} but the run carries no matching target "
-        f"credentials; add {', '.join(missing)} (or choose the connector explicitly) and "
-        "run again",
-        status_code=422,
-    )
-
-
-def reject_voice_contract_without_credentials(
-    payload: Mapping[str, Any], contract: Mapping[str, Any]
-) -> None:
-    """Same rule after authoring, for sources the dependency scan could not classify."""
-    from simulate.serializers.harness_job import (
-        CONNECTOR_ALIASES,
-        complete_provider_families,
-    )
-
-    agent = payload["agent"]
-    if (
-        payload["source"]["kind"] == "remote"
-        or str(agent.get("connector") or "auto").lower() != "auto"
-        or str(contract.get("modality") or "").lower() != "voice"
-        or complete_provider_families(agent)
-    ):
-        return
-    families = " or ".join(
-        "+".join(aliases) for aliases in CONNECTOR_ALIASES.values()
-    )
-    raise HostedHarnessError(
-        "provider_credentials_missing",
-        "authoring found a voice agent but the run carries no target provider credentials; "
-        f"add {families} and run again",
-        status_code=422,
-    )
-
 _PROVIDER_PROBE_TIMEOUT = 8
 # The one read-only call per provider that only succeeds with a valid key. Hosted providers
 # use the same API hosts the run's egress allowlist already opens (``_provider_egress_domains``);
@@ -591,56 +539,6 @@ def guest_failure_cause(tail: str) -> str:
         if detail and detail not in cause:
             cause = f"{cause}; agent: {name}: {detail}" if cause else f"{name}: {detail}"
     return cause[:400]
-
-
-def reject_invalid_provider_credentials(values: Mapping[str, str]) -> None:
-    """Refuse a run whose complete credential family fails its provider's live check.
-
-    Only complete families are probed: an incomplete one is either optional (``auto``) or
-    already reported as missing. The run passes when any probed family works.
-    """
-    from simulate.serializers.harness_job import CONNECTOR_ALIASES
-
-    families = [
-        connector
-        for connector, aliases in CONNECTOR_ALIASES.items()
-        if all(str(values.get(alias) or "").strip() for alias in aliases)
-    ]
-    failures = []
-    for connector in families:
-        failure = probe_provider_credentials(connector, values)
-        if failure is None:
-            return
-        failures.append(failure)
-    if failures:
-        raise HostedHarnessError(
-            "provider_credentials_invalid",
-            "; ".join(failures) + " - check the values and run again",
-            status_code=422,
-        )
-
-
-def _reject_unrunnable_target(
-    job: HostedHarnessJob, payload: Mapping[str, Any], source_archive: bytes
-) -> None:
-    """Stop before any sandbox exists when the target can only fail at connect time.
-
-    Runs at the one point both authoring paths share: the source is in hand and no model
-    call has been paid for. Checks, in order, that a source naming a voice provider carries
-    that family, then that every complete family is accepted by its provider.
-    """
-    if payload["source"]["kind"] == "remote":
-        return
-    agent = payload["agent"]
-    if str(agent.get("connector") or "auto").lower() == "auto":
-        detected, _scanned = detect_source_connectors(source_archive)
-        reject_missing_provider_credentials(payload, detected)
-    if agent.get("secret_refs"):
-        values = dict(PlatformSecretResolver().resolve(job))
-        livekit_url = (agent.get("config") or {}).get("livekit_url")
-        if livekit_url and not values.get("LIVEKIT_URL"):
-            values["LIVEKIT_URL"] = str(livekit_url)
-        reject_invalid_provider_credentials(values)
 
 
 class HostedSourceAcquirer:
@@ -1406,7 +1304,6 @@ class DaytonaHostedGateway:
             job.payload = payload
             job.save(update_fields=["payload", "updated_at"])
 
-        _reject_unrunnable_target(job, payload, source_archive)
 
         # An imported provider target is part of the agent source of truth. Give the isolated
         # authoring control process only the one provider credential it needs to fetch a
@@ -1705,7 +1602,6 @@ class DaytonaHostedGateway:
             # Resolve cached authoring created before connector resolution shipped as well as
             # newly-authored jobs. This must happen before network policy and job.json are built.
             payload = resolve_authored_connector(payload, authoring_archive)
-        _reject_unrunnable_target(job, payload, source_archive)
         # A chat-driven "add N scenarios" request replays the frozen world but re-runs
         # scenario-gen (extend) against it. The marker persists across infra retries and is
         # cleared only once the extended authoring is stored (store_authoring_archive), so a
@@ -3168,10 +3064,6 @@ def store_authoring_archive(
         job.state = HostedHarnessJob.State.ADMITTED
         update_fields.extend(["stage_outputs", "current_stage", "state"])
     job.save(update_fields=update_fields)
-    # The archive is kept either way; the check only decides whether a run sandbox is worth
-    # creating. Sources the dependency scan could not classify are caught here instead.
-    if advance_lifecycle:
-        reject_voice_contract_without_credentials(payload, authored_contract(body))
     return object_key
 
 

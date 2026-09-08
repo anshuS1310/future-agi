@@ -33,8 +33,6 @@ from simulate.services.hosted_harness_gateway import (
     detect_source_connectors,
     pack_authoring_archive,
     prepare_dispatch_payload,
-    reject_missing_provider_credentials,
-    reject_voice_contract_without_credentials,
     resolve_authored_connector,
     resolve_platform_simulator_secrets,
 )
@@ -611,69 +609,6 @@ def test_source_scan_reads_manifests_and_code_but_not_prose():
     assert detected == ["livekit"]
     assert scanned == 2
     assert detect_source_connectors(b"not a tarball") == ([], 0)
-
-
-def test_auto_source_without_credentials_for_detected_provider_is_refused_before_authoring():
-    payload = _payload()
-    payload["agent"] = {"connector": "auto", "config": {}, "secret_refs": {}}
-
-    with pytest.raises(HostedHarnessError) as refused:
-        reject_missing_provider_credentials(payload, ["livekit"])
-    assert refused.value.code == "provider_credentials_missing"
-    assert "LIVEKIT_API_SECRET" in refused.value.message
-
-    # Nothing detected: authoring decides; a chat agent needs no provider credential.
-    reject_missing_provider_credentials(payload, [])
-    # Any complete family satisfies a detected voice source (detection is a heuristic).
-    payload["agent"]["secret_refs"] = {"RETELL_API_KEY": {}}
-    reject_missing_provider_credentials(payload, ["livekit"])
-    # Remote sources own their credentials.
-    payload["agent"]["secret_refs"] = {}
-    payload["source"] = {"kind": "remote", "endpoint": "https://a.example", "visibility": "public"}
-    reject_missing_provider_credentials(payload, ["livekit"])
-
-
-def test_voice_contract_without_any_provider_family_is_refused_after_authoring():
-    payload = _payload()
-    payload["agent"] = {"connector": "auto", "config": {}, "secret_refs": {}}
-
-    with pytest.raises(HostedHarnessError) as refused:
-        reject_voice_contract_without_credentials(payload, {"modality": "voice"})
-    assert refused.value.code == "provider_credentials_missing"
-
-    reject_voice_contract_without_credentials(payload, {"modality": "chat"})
-    payload["agent"]["secret_refs"] = {"VAPI_API_KEY": {}}
-    reject_voice_contract_without_credentials(payload, {"modality": "voice"})
-    explicit = _payload()
-    explicit["agent"] = {"connector": "livekit", "config": {}, "secret_refs": {}}
-    reject_voice_contract_without_credentials(explicit, {"modality": "voice"})
-
-
-@pytest.mark.django_db
-def test_author_refuses_credential_less_voice_source_before_creating_a_sandbox(
-    organization,
-):
-    payload = _payload()
-    payload["agent"] = {"connector": "auto", "config": {}, "secret_refs": {}}
-    job, _ = create_hosted_job(organization, payload, idempotency_key="author-gate")
-    gateway = object.__new__(DaytonaHostedGateway)
-    gateway.client = _FailingDaytonaCreate()
-    gateway.snapshot = "alk-hosted-v1"
-    gateway.snapshot_digest = ""
-    source = _source_tarball({"requirements.txt": "livekit-agents==1.0\n"})
-
-    with (
-        patch(
-            "simulate.services.hosted_harness_gateway.HostedSourceAcquirer.acquire",
-            return_value=(source, "b" * 40),
-        ),
-        pytest.raises(HostedHarnessError) as refused,
-    ):
-        gateway.author(job)
-
-    assert refused.value.code == "provider_credentials_missing"
-    assert gateway.client.params is None
-
 
 
 def test_dispatch_payload_mirrors_only_livekit_url():

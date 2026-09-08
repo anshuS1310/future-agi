@@ -44,15 +44,22 @@ export const eventTime = (value) => {
 // event covers four UI stages. Six stages (building/validating environment, generating data,
 // validating scenarios, connecting agent, grading) are never emitted at all, so they can only
 // be credited through the group they belong to.
+// `validating_environment` runs AFTER the scenarios exist: it freezes a baseline of the world
+// and proves each scenario's reference solution against it, so its failures name scenarios. Filed
+// under environment it makes both groupings move backwards mid-run, which drags the reader off the
+// Scenarios tab and back into a tab that had already finished.
 const EVENT_STAGE_GROUPS = {
   understand: ["understanding_agent"],
   environment: [
     "generating_environment",
     "building_environment",
-    "validating_environment",
     "generating_data",
   ],
-  scenarios: ["generating_scenarios", "validating_scenarios"],
+  scenarios: [
+    "generating_scenarios",
+    "validating_environment",
+    "validating_scenarios",
+  ],
   calls: ["connecting_agent", "running", "grading"],
   cleaning_up: ["cleaning_up"],
   uploading_artifacts: ["uploading_artifacts"],
@@ -259,10 +266,13 @@ const TAB_STAGES = {
   environment: [
     "generating_environment",
     "building_environment",
-    "validating_environment",
     "generating_data",
   ],
-  scenarios: ["generating_scenarios", "validating_scenarios"],
+  scenarios: [
+    "generating_scenarios",
+    "validating_environment",
+    "validating_scenarios",
+  ],
   runs: [
     "connecting_agent",
     "running",

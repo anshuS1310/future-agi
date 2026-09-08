@@ -191,16 +191,17 @@ describe("canceledProgress", () => {
     [
       "generating_environment",
       "building_environment",
-      "validating_environment",
       "generating_data",
     ].forEach((stage) => expect(doneStages.has(stage)).toBe(true));
+    // validating_environment belongs to the scenarios group now, so the environment
+    // group completing does not credit it.
+    expect(doneStages.has("validating_environment")).toBe(false);
   });
 
   it("never credits a group that only started", () => {
     const { doneStages } = canceledProgress([started("environment")]);
     [
       "building_environment",
-      "validating_environment",
       "generating_data",
     ].forEach((stage) => expect(doneStages.has(stage)).toBe(false));
   });
@@ -480,6 +481,17 @@ describe("tabState", () => {
   // Environment covers four checklist stages, three of which never emit an event.
   it("spins Environment on a stage that is never reported", () => {
     expect(tabState("environment", at("building_environment"))).toBe(
+      TAB_STATE.WORKING,
+    );
+  });
+
+  // The runner reaches validating_environment AFTER generating_scenarios, so filing it under
+  // environment sent the working tab backwards into a tab that had already finished.
+  it("keeps Scenarios working through validating_environment", () => {
+    expect(tabState("scenarios", at("validating_environment"))).toBe(
+      TAB_STATE.WORKING,
+    );
+    expect(tabState("environment", at("validating_environment"))).not.toBe(
       TAB_STATE.WORKING,
     );
   });

@@ -45,6 +45,8 @@ _VOICE_ONLY_EVALS = frozenset(
 _SOURCE_BY_KEY_VOICE = {
     # The combined recording; a per-channel mapping resolves empty on combined-only providers.
     "conversation": "voice_recording",
+    # Audio-analysing evals ask for the recording itself rather than a transcript of it.
+    "input_audio": "voice_recording",
     # A single-output eval on a call is judging the same conversation.
     "output": "voice_recording",
     "agent_prompt": "agent_prompt",
@@ -111,6 +113,12 @@ def offered_evals(organization, workspace, modality: str) -> list[dict[str, Any]
             continue
         mapping = resolve_eval_mapping(template, modality)
         if mapping is None:
+            logger.warning(
+                "harness_eval_not_offerable",
+                template=name,
+                required_keys=_required_keys(template),
+                modality=modality,
+            )
             continue
         offered.append(
             {

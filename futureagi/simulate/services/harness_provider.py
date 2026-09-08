@@ -356,13 +356,12 @@ def _preflight_source_connectors(request, payload):
 
 
 def _preflight_credential_probe(payload) -> list[dict[str, Any]]:
-    """Exercise every complete credential family the form submitted, live.
+    """Exercise every credential the form submitted against its provider, live.
 
     Values arrive only through the write-only ``credential_values`` preflight field; a
     LiveKit URL entered as public config counts toward that family. Nothing is stored.
     """
-    from simulate.serializers.harness_job import CONNECTOR_ALIASES
-    from simulate.services.hosted_harness_gateway import probe_provider_credentials
+    from simulate.services.harness_credential_probes import probe_all
 
     if payload["source"]["kind"] == "remote":
         return []
@@ -374,19 +373,7 @@ def _preflight_credential_probe(payload) -> list[dict[str, Any]]:
     livekit_url = config.get("livekit_url") or config.get("LIVEKIT_URL")
     if livekit_url and not values.get("LIVEKIT_URL"):
         values["LIVEKIT_URL"] = str(livekit_url)
-    report = []
-    for connector, aliases in CONNECTOR_ALIASES.items():
-        if not all(values.get(alias, "").strip() for alias in aliases):
-            continue
-        failure = probe_provider_credentials(connector, values)
-        report.append(
-            {
-                "connector": connector,
-                "ok": failure is None,
-                "message": failure or f"{connector} accepted the credentials",
-            }
-        )
-    return report
+    return [result.as_dict() for result in probe_all(values)]
 
 
 
@@ -482,7 +469,9 @@ class DaytonaHarnessProvider:
         credentials = _connector_credential_readiness(payload, detected, scanned)
         probe = _preflight_credential_probe(payload)
         credentials["report"]["probe"] = probe
-        probe_failed = bool(probe) and not any(item["ok"] for item in probe)
+        # Every submitted key must be accepted: a wrong model key beside a valid transport
+        # key still ends in a run that cannot speak.
+        probe_failed = any(not item["ok"] for item in probe)
         return Response(
             {
                 "ready_to_submit": not credentials["missing"] and not probe_failed,

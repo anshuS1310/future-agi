@@ -487,8 +487,8 @@ export default function HarnessCreate() {
   const requiredInputCount =
     missingRequirements.length + unsatisfiedChoices.length;
   const probeResults = preflight?.credentials?.probe || [];
-  const probeFailed =
-    probeResults.length > 0 && !probeResults.some((item) => item.ok);
+  const rejectedProbes = probeResults.filter((item) => !item.ok);
+  const probeFailed = rejectedProbes.length > 0;
   // Only "missing" rows take a value; everything else is read-only detail that
   // would otherwise bury them at equal visual weight.
   const requirementsNeedingValue = requirements.filter(
@@ -945,7 +945,7 @@ export default function HarnessCreate() {
                           preflightDirty
                             ? "Something changed — check again"
                             : probeFailed
-                              ? "Provider rejected the credentials"
+                              ? `${rejectedProbes.length} credential${rejectedProbes.length === 1 ? "" : "s"} rejected`
                               : requirementsConfigured
                                 ? "Ready to run"
                                 : `${requiredInputCount} credential choice${requiredInputCount === 1 ? "" : "s"} needed`
@@ -998,9 +998,9 @@ export default function HarnessCreate() {
                           .join(" or ")}
                       </Alert>
                     ))}
-                    {(preflight.credentials?.probe || []).map((item) => (
+                    {probeResults.map((item) => (
                       <Alert
-                        key={item.connector}
+                        key={item.provider}
                         severity={item.ok ? "success" : "error"}
                         variant="outlined"
                       >

@@ -454,67 +454,6 @@ def detect_source_connectors(archive: bytes) -> tuple[list[str], int]:
     return sorted(found), scanned
 
 
-_PROVIDER_PROBE_TIMEOUT = 8
-# The one read-only call per provider that only succeeds with a valid key. Hosted providers
-# use the same API hosts the run's egress allowlist already opens (``_provider_egress_domains``);
-# LiveKit is the customer's own server, reached through ``LIVEKIT_URL``.
-_PROVIDER_PROBES = {
-    "vapi": ("VAPI_API_KEY", "https://api.vapi.ai/assistant?limit=1"),
-    "retell": ("RETELL_API_KEY", "https://api.retellai.com/list-agents"),
-}
-
-
-def _livekit_http_url(url: str) -> str:
-    parsed = urlparse(url.strip())
-    scheme = {"wss": "https", "ws": "http"}.get(parsed.scheme, parsed.scheme or "https")
-    return f"{scheme}://{parsed.netloc or parsed.path}".rstrip("/")
-
-
-def probe_provider_credentials(connector: str, values: Mapping[str, str]) -> str | None:
-    """Exercise one credential family against its provider. Returns the failure text.
-
-    Presence of an alias says nothing about whether the key is right; a wrong key otherwise
-    surfaces from the agent's own startup, minutes and one sandbox later. Network trouble is
-    reported as a failure too: the run's connect stage would hit the same wall.
-    """
-    from simulate.serializers.harness_job import CONNECTOR_ALIASES
-
-    aliases = CONNECTOR_ALIASES.get(connector)
-    if not aliases or any(not str(values.get(alias) or "").strip() for alias in aliases):
-        return None
-    try:
-        if connector == "livekit":
-            from livekit import api as livekit_api
-
-            token = (
-                livekit_api.AccessToken(
-                    values["LIVEKIT_API_KEY"].strip(), values["LIVEKIT_API_SECRET"].strip()
-                )
-                .with_grants(livekit_api.VideoGrants(room_list=True))
-                .to_jwt()
-            )
-            response = requests.post(
-                f"{_livekit_http_url(values['LIVEKIT_URL'])}/twirp/livekit.RoomService/ListRooms",
-                json={},
-                headers={"Authorization": f"Bearer {token}"},
-                timeout=_PROVIDER_PROBE_TIMEOUT,
-            )
-        else:
-            alias, url = _PROVIDER_PROBES[connector]
-            response = requests.get(
-                url,
-                headers={"Authorization": f"Bearer {values[alias].strip()}"},
-                timeout=_PROVIDER_PROBE_TIMEOUT,
-            )
-    except requests.RequestException as exc:
-        return f"{connector} is unreachable: {type(exc).__name__}"
-    if response.status_code in (401, 403):
-        return f"{connector} rejected the credentials (HTTP {response.status_code})"
-    if response.status_code >= 400:
-        return f"{connector} returned HTTP {response.status_code}"
-    return None
-
-
 _GUEST_CAUSE_LINE = re.compile(r"(?:ProcessRuntimeError|RuntimeValidationError): (.+)$")
 _GUEST_INNER_EXCEPTION = re.compile(r"(?:^|\\n)([A-Za-z_.]+(?:Error|Exception)): ([^\\\"\n]+)")
 

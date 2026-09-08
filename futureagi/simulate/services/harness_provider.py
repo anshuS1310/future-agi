@@ -355,6 +355,41 @@ def _preflight_source_connectors(request, payload):
     return detect_source_connectors(archive)
 
 
+def _preflight_credential_probe(payload) -> list[dict[str, Any]]:
+    """Exercise every complete credential family the form submitted, live.
+
+    Values arrive only through the write-only ``credential_values`` preflight field; a
+    LiveKit URL entered as public config counts toward that family. Nothing is stored.
+    """
+    from simulate.serializers.harness_job import CONNECTOR_ALIASES
+    from simulate.services.hosted_harness_gateway import probe_provider_credentials
+
+    if payload["source"]["kind"] == "remote":
+        return []
+    values = {
+        str(alias).upper(): str(value)
+        for alias, value in (payload.get("credential_values") or {}).items()
+    }
+    config = payload["agent"].get("config") or {}
+    livekit_url = config.get("livekit_url") or config.get("LIVEKIT_URL")
+    if livekit_url and not values.get("LIVEKIT_URL"):
+        values["LIVEKIT_URL"] = str(livekit_url)
+    report = []
+    for connector, aliases in CONNECTOR_ALIASES.items():
+        if not all(values.get(alias, "").strip() for alias in aliases):
+            continue
+        failure = probe_provider_credentials(connector, values)
+        report.append(
+            {
+                "connector": connector,
+                "ok": failure is None,
+                "message": failure or f"{connector} accepted the credentials",
+            }
+        )
+    return report
+
+
+
 class DaytonaHarnessProvider:
     """Platform-as-gateway. Persists the job and drives Daytona via Temporal."""
 
@@ -445,9 +480,12 @@ class DaytonaHarnessProvider:
         except HostedHarnessError as exc:
             return Response(exc.as_dict(), status=exc.status_code)
         credentials = _connector_credential_readiness(payload, detected, scanned)
+        probe = _preflight_credential_probe(payload)
+        credentials["report"]["probe"] = probe
+        probe_failed = bool(probe) and not any(item["ok"] for item in probe)
         return Response(
             {
-                "ready_to_submit": not credentials["missing"],
+                "ready_to_submit": not credentials["missing"] and not probe_failed,
                 "credentials": credentials["report"],
                 "effective_parallelism": runtime["parallelism"],
                 "snapshot": {

@@ -506,6 +506,119 @@ def reject_voice_contract_without_credentials(
         status_code=422,
     )
 
+_PROVIDER_PROBE_TIMEOUT = 8
+# The one read-only call per provider that only succeeds with a valid key. Hosted providers
+# use the same API hosts the run's egress allowlist already opens (``_provider_egress_domains``);
+# LiveKit is the customer's own server, reached through ``LIVEKIT_URL``.
+_PROVIDER_PROBES = {
+    "vapi": ("VAPI_API_KEY", "https://api.vapi.ai/assistant?limit=1"),
+    "retell": ("RETELL_API_KEY", "https://api.retellai.com/list-agents"),
+}
+
+
+def _livekit_http_url(url: str) -> str:
+    parsed = urlparse(url.strip())
+    scheme = {"wss": "https", "ws": "http"}.get(parsed.scheme, parsed.scheme or "https")
+    return f"{scheme}://{parsed.netloc or parsed.path}".rstrip("/")
+
+
+def probe_provider_credentials(connector: str, values: Mapping[str, str]) -> str | None:
+    """Exercise one credential family against its provider. Returns the failure text.
+
+    Presence of an alias says nothing about whether the key is right; a wrong key otherwise
+    surfaces from the agent's own startup, minutes and one sandbox later. Network trouble is
+    reported as a failure too: the run's connect stage would hit the same wall.
+    """
+    from simulate.serializers.harness_job import CONNECTOR_ALIASES
+
+    aliases = CONNECTOR_ALIASES.get(connector)
+    if not aliases or any(not str(values.get(alias) or "").strip() for alias in aliases):
+        return None
+    try:
+        if connector == "livekit":
+            from livekit import api as livekit_api
+
+            token = (
+                livekit_api.AccessToken(
+                    values["LIVEKIT_API_KEY"].strip(), values["LIVEKIT_API_SECRET"].strip()
+                )
+                .with_grants(livekit_api.VideoGrants(room_list=True))
+                .to_jwt()
+            )
+            response = requests.post(
+                f"{_livekit_http_url(values['LIVEKIT_URL'])}/twirp/livekit.RoomService/ListRooms",
+                json={},
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=_PROVIDER_PROBE_TIMEOUT,
+            )
+        else:
+            alias, url = _PROVIDER_PROBES[connector]
+            response = requests.get(
+                url,
+                headers={"Authorization": f"Bearer {values[alias].strip()}"},
+                timeout=_PROVIDER_PROBE_TIMEOUT,
+            )
+    except requests.RequestException as exc:
+        return f"{connector} is unreachable: {type(exc).__name__}"
+    if response.status_code in (401, 403):
+        return f"{connector} rejected the credentials (HTTP {response.status_code})"
+    if response.status_code >= 400:
+        return f"{connector} returned HTTP {response.status_code}"
+    return None
+
+
+_GUEST_CAUSE_LINE = re.compile(r"(?:ProcessRuntimeError|RuntimeValidationError): (.+)$")
+_GUEST_INNER_EXCEPTION = re.compile(r"(?:^|\\n)([A-Za-z_.]+(?:Error|Exception)): ([^\\\"\n]+)")
+
+
+def guest_failure_cause(tail: str) -> str:
+    """The last typed failure the guest printed, with the agent's own exception when present.
+
+    The guest tail carries the runtime's ``ProcessRuntimeError`` line and, for a crashed agent
+    process, its JSON-logged traceback. A user reads "failed to connect to livekit" and knows
+    which key to fix; "failed real-runtime validation" tells them nothing.
+    """
+    text = (tail or "").replace("\x01", "")
+    cause = ""
+    for line in text.splitlines():
+        match = _GUEST_CAUSE_LINE.search(line)
+        if match:
+            cause = match.group(1).strip().rstrip(":")
+    inner = _GUEST_INNER_EXCEPTION.findall(text)
+    if inner:
+        name, detail = inner[-1]
+        detail = detail.strip()
+        if detail and detail not in cause:
+            cause = f"{cause}; agent: {name}: {detail}" if cause else f"{name}: {detail}"
+    return cause[:400]
+
+
+def reject_invalid_provider_credentials(values: Mapping[str, str]) -> None:
+    """Refuse a run whose complete credential family fails its provider's live check.
+
+    Only complete families are probed: an incomplete one is either optional (``auto``) or
+    already reported as missing. The run passes when any probed family works.
+    """
+    from simulate.serializers.harness_job import CONNECTOR_ALIASES
+
+    families = [
+        connector
+        for connector, aliases in CONNECTOR_ALIASES.items()
+        if all(str(values.get(alias) or "").strip() for alias in aliases)
+    ]
+    failures = []
+    for connector in families:
+        failure = probe_provider_credentials(connector, values)
+        if failure is None:
+            return
+        failures.append(failure)
+    if failures:
+        raise HostedHarnessError(
+            "provider_credentials_invalid",
+            "; ".join(failures) + " - check the values and run again",
+            status_code=422,
+        )
+
 
 class HostedSourceAcquirer:
     _REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -1272,10 +1385,17 @@ class DaytonaHostedGateway:
 
         # Cheapest point to learn what the agent talks to: the source is in hand and no
         # sandbox or model call has been paid for yet. A voice source with no matching
-        # credentials cannot succeed, so stop here rather than after authoring.
+        # credentials, or with credentials its provider rejects, cannot succeed, so stop
+        # here rather than after authoring.
         if str(payload["agent"].get("connector") or "auto").lower() == "auto":
             detected, _scanned = detect_source_connectors(source_archive)
             reject_missing_provider_credentials(payload, detected)
+        if payload["source"]["kind"] != "remote" and payload["agent"].get("secret_refs"):
+            values = dict(PlatformSecretResolver().resolve(job))
+            livekit_url = (payload["agent"].get("config") or {}).get("livekit_url")
+            if livekit_url and not values.get("LIVEKIT_URL"):
+                values["LIVEKIT_URL"] = str(livekit_url)
+            reject_invalid_provider_credentials(values)
 
         # An imported provider target is part of the agent source of truth. Give the isolated
         # authoring control process only the one provider credential it needs to fetch a
@@ -2407,6 +2527,12 @@ class DaytonaHostedGateway:
             retry_pending = self._should_retry(attempt, "infrastructure")
         elif exit_code != 0 and not attempt.terminal_event_received:
             authoring_invalid = exit_code == 78
+            label = (
+                "Generated environment failed real-runtime validation after bounded repair"
+                if authoring_invalid
+                else f"guest entrypoint exited {exit_code}"
+            )
+            cause = guest_failure_cause(observation.get("logs", ""))
             attempt.terminal_stage = "failed"
             attempt.terminal_failure = {
                 "domain": "environment" if authoring_invalid else "infrastructure",
@@ -2414,11 +2540,7 @@ class DaytonaHostedGateway:
                 "code": "authoring_runtime_validation_failed"
                 if authoring_invalid
                 else "guest_crashed",
-                "message": (
-                    "Generated environment failed real-runtime validation after bounded repair"
-                    if authoring_invalid
-                    else f"guest entrypoint exited {exit_code}"
-                ),
+                "message": f"{label}: {cause}" if cause else label,
                 "details": {
                     "guest_log_tail": observation.get("logs", ""),
                     "process_logs": observation.get("process_logs", ""),

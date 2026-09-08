@@ -347,6 +347,14 @@ class HarnessJobActionSerializer(serializers.Serializer):
 
 class HarnessPreflightSerializer(HarnessJobCreateSerializer):
     reject_missing_credentials = False
+    # Raw target-provider values the form holds before Run stores them. Preflight exercises
+    # them against the provider and discards them; they are never persisted or echoed.
+    credential_values = serializers.DictField(
+        child=serializers.CharField(allow_blank=True, max_length=4096),
+        required=False,
+        write_only=True,
+        help_text="Target-provider values to verify live; used for this check only.",
+    )
 
 
 class HarnessJobAdjustmentSerializer(serializers.Serializer):

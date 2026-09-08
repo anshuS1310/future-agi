@@ -346,14 +346,19 @@ export default function HarnessCreate() {
     },
   });
 
+  // Preflight verifies the typed values against the provider before Run stores them;
+  // the create payload never carries raw values, only the stored refs.
+  const preflightPayload = () => ({
+    ...hostedPayload(pendingEnvironmentRefs()),
+    credential_values: environmentValues,
+  });
+
   const inspect = async () => {
     setChecking(true);
     setError("");
     setPreflightError("");
     try {
-      const value = await preflightHarnessJob(
-        hostedPayload(pendingEnvironmentRefs()),
-      );
+      const value = await preflightHarnessJob(preflightPayload());
       setPreflight(value);
       setPreflightDirty(false);
     } catch (requestError) {
@@ -367,9 +372,7 @@ export default function HarnessCreate() {
     setSubmitting(true);
     setError("");
     try {
-      const checked = await preflightHarnessJob(
-        hostedPayload(pendingEnvironmentRefs()),
-      );
+      const checked = await preflightHarnessJob(preflightPayload());
       setPreflight(checked);
       setPreflightDirty(false);
       if (!checked?.ready_to_submit) {
@@ -483,6 +486,9 @@ export default function HarnessCreate() {
     ) && unsatisfiedChoices.length === 0;
   const requiredInputCount =
     missingRequirements.length + unsatisfiedChoices.length;
+  const probeResults = preflight?.credentials?.probe || [];
+  const probeFailed =
+    probeResults.length > 0 && !probeResults.some((item) => item.ok);
   // Only "missing" rows take a value; everything else is read-only detail that
   // would otherwise bury them at equal visual weight.
   const requirementsNeedingValue = requirements.filter(
@@ -929,16 +935,20 @@ export default function HarnessCreate() {
                           // claim the run is good to go.
                           preflightDirty
                             ? null
-                            : requirementsConfigured
-                              ? STATUS_TYPES.PASS
-                              : STATUS_TYPES.RUNNING
+                            : probeFailed
+                              ? STATUS_TYPES.ERROR
+                              : requirementsConfigured
+                                ? STATUS_TYPES.PASS
+                                : STATUS_TYPES.RUNNING
                         }
                         label={
                           preflightDirty
                             ? "Something changed — check again"
-                            : requirementsConfigured
-                              ? "Ready to run"
-                              : `${requiredInputCount} credential choice${requiredInputCount === 1 ? "" : "s"} needed`
+                            : probeFailed
+                              ? "Provider rejected the credentials"
+                              : requirementsConfigured
+                                ? "Ready to run"
+                                : `${requiredInputCount} credential choice${requiredInputCount === 1 ? "" : "s"} needed`
                         }
                       />
                       <Typography variant="caption" color="text.secondary">
@@ -986,6 +996,15 @@ export default function HarnessCreate() {
                         {choice.options
                           .map((option) => option.join(" + "))
                           .join(" or ")}
+                      </Alert>
+                    ))}
+                    {(preflight.credentials?.probe || []).map((item) => (
+                      <Alert
+                        key={item.connector}
+                        severity={item.ok ? "success" : "error"}
+                        variant="outlined"
+                      >
+                        {item.message}
                       </Alert>
                     ))}
                     {requirementsNeedingValue.length > 0 && (

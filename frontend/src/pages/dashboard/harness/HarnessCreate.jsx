@@ -946,7 +946,10 @@ export default function HarnessCreate() {
                         scanned ·{" "}
                         {(
                           preflight.credentials?.detected_connectors || []
-                        ).join(", ") || "connector discovered after checkout"}
+                        ).join(", ") ||
+                          (preflight.credentials?.scanned_files
+                            ? "no voice provider detected — target credentials are optional"
+                            : "connector discovered after checkout")}
                       </Typography>
                     </Stack>
                     {(preflight.packaging?.notes || []).map((note) => (

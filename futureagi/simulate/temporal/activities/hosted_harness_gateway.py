@@ -25,6 +25,7 @@ async def author_hosted_harness_job(
     carries ``authoring_object_key`` is treated as authored and skipped.
     """
     from simulate.models import HostedHarnessJob
+    from simulate.services.hosted_harness import HostedHarnessError
     from simulate.services.hosted_harness_gateway import (
         DaytonaHostedGateway,
         store_authoring_archive,
@@ -49,14 +50,17 @@ async def author_hosted_harness_job(
         body = DaytonaHostedGateway().author(job)
         store_authoring_archive(job, body)
 
-    def _failed(detail: str) -> None:
+    def _failed(code: str, detail: str) -> None:
         job = HostedHarnessJob.no_workspace_objects.get(id=input.job_id)
         job.state = HostedHarnessJob.State.FAILED
         job.current_stage = "failed"
         job.failure = {
-            "domain": "simulator",
+            # Missing credentials are the user's environment to fix, not a simulator fault.
+            "domain": "environment"
+            if code == "provider_credentials_missing"
+            else "simulator",
             "stage": "authoring",
-            "code": "authoring_failed",
+            "code": code,
             "message": detail[:1000],
         }
         job.terminal_at = timezone.now()
@@ -92,7 +96,8 @@ async def author_hosted_harness_job(
         return HostedHarnessAuthoringOutput(ready=True, state="admitted")
     except Exception as exc:
         detail = str(exc) or type(exc).__name__
-        await _run_db(_failed, detail)
+        code = exc.code if isinstance(exc, HostedHarnessError) else "authoring_failed"
+        await _run_db(_failed, code, detail)
         return HostedHarnessAuthoringOutput(
             ready=False, state="failed", detail=detail[:1000]
         )

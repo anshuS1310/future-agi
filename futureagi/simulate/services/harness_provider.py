@@ -269,59 +269,90 @@ def _scenario_status(reg: HostedHarnessScenario) -> str | None:
     return receipt or "running"
 
 
-def _connector_credential_readiness(payload):
+def _connector_credential_readiness(payload, detected_connectors=(), scanned_files=0):
     """Readiness report the create form renders: which target aliases are still missing.
 
-    Same rule as create's hard reject (``missing_provider_credentials``), expressed as
-    requirements so preflight can name them instead of refusing before the user knows.
+    Same rule as the authoring gate (``missing_provider_credentials``), expressed as
+    requirements so preflight can name them instead of refusing before the user knows. For
+    ``auto`` only the families the source scan detected are required; the rest stay
+    ``optional`` so a chat agent, or a repository the scan could not classify, is not shown a
+    wall of credentials it may never need.
     """
     from simulate.serializers.harness_job import (
         CONNECTOR_ALIASES,
+        complete_provider_families,
         missing_provider_credentials,
+        present_provider_aliases,
     )
 
     agent = payload["agent"]
     connector = agent["connector"]
     remote = payload["source"]["kind"] == "remote"
-    missing = [] if remote else missing_provider_credentials(agent)
-    present = {str(name).upper() for name in (agent.get("secret_refs") or {})}
-    config = agent.get("config") or {}
-    if str(config.get("livekit_url") or config.get("LIVEKIT_URL") or "").strip():
-        present.add("LIVEKIT_URL")
-    families = (
-        list(CONNECTOR_ALIASES.values())
-        if connector == "auto"
-        else [CONNECTOR_ALIASES[connector]]
-    )
+    detected = [name for name in detected_connectors if name in CONNECTOR_ALIASES]
+    missing = [] if remote else missing_provider_credentials(agent, detected)
+    present = present_provider_aliases(agent)
+    if connector == "auto":
+        families = dict(CONNECTOR_ALIASES)
+        # A complete family of any kind satisfies the run (see missing_provider_credentials),
+        # so nothing else is required once one is present.
+        required = (
+            set()
+            if remote or complete_provider_families(agent)
+            else set(detected)
+        )
+    else:
+        families = {connector: CONNECTOR_ALIASES[connector]}
+        required = set() if remote else {connector}
+
+    def _status(name, alias):
+        if alias in present:
+            return "configured"
+        return "missing" if name in required else "optional"
+
     requirements = [
         {
             "environment_name": alias,
             "purpose": "target_provider",
-            "required": not remote,
-            "status": "configured" if alias in present else "missing",
+            "required": name in required,
+            "status": _status(name, alias),
         }
-        for aliases in families
+        for name, aliases in families.items()
         for alias in aliases
     ]
     choices = []
-    if connector == "auto" and not remote:
+    if connector == "auto" and len(required) > 1:
         choices.append(
             {
                 "id": "target_provider",
                 "purpose": "Target provider credentials",
                 "satisfied": not missing,
-                "options": [list(aliases) for aliases in families],
+                "options": [list(CONNECTOR_ALIASES[name]) for name in required],
             }
         )
     return {
         "missing": missing,
         "report": {
-            "scanned_files": 0,
-            "detected_connectors": [] if connector == "auto" else [connector],
+            "scanned_files": scanned_files,
+            "detected_connectors": detected if connector == "auto" else [connector],
             "requirements": requirements,
             "credential_choices": choices,
         },
     }
+
+
+def _preflight_source_connectors(request, payload):
+    """Scan the submitted source the same way authoring will, so preflight asks for the
+    credential family the agent actually uses instead of every family."""
+    from simulate.services.hosted_harness_gateway import (
+        HostedSourceAcquirer,
+        detect_source_connectors,
+    )
+
+    if payload["agent"]["connector"] != "auto" or payload["source"]["kind"] == "remote":
+        return [], 0
+    probe = HostedHarnessJob(organization=_organization(request), payload=payload)
+    archive, _commit = HostedSourceAcquirer().acquire(probe)
+    return detect_source_connectors(archive)
 
 
 class DaytonaHarnessProvider:
@@ -409,7 +440,11 @@ class DaytonaHarnessProvider:
         except HostedHarnessError as exc:
             return Response(exc.as_dict(), status=exc.status_code)
         runtime = payload["runtime"]
-        credentials = _connector_credential_readiness(payload)
+        try:
+            detected, scanned = _preflight_source_connectors(request, payload)
+        except HostedHarnessError as exc:
+            return Response(exc.as_dict(), status=exc.status_code)
+        credentials = _connector_credential_readiness(payload, detected, scanned)
         return Response(
             {
                 "ready_to_submit": not credentials["missing"],

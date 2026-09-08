@@ -384,6 +384,128 @@ class GitHubAppTokenProvider:
         finally:
             self.revoke(token)
 
+# Dependency manifests and code are where a voice framework shows up; prose (README, docs)
+# is skipped so an English "retell" cannot masquerade as the Retell SDK.
+_SOURCE_SCAN_SUFFIXES = (
+    ".py",
+    ".js",
+    ".mjs",
+    ".cjs",
+    ".jsx",
+    ".ts",
+    ".tsx",
+    ".json",
+    ".toml",
+    ".txt",
+    ".lock",
+    ".yaml",
+    ".yml",
+    ".cfg",
+    ".env.example",
+)
+_SOURCE_SCAN_NAMES = {"dockerfile", "pipfile", "package.json", "pyproject.toml"}
+_SOURCE_SCAN_SKIP_DIRS = ("/node_modules/", "/.git/", "/.venv/", "/venv/", "/dist/")
+_SOURCE_SCAN_MAX_FILE_BYTES = 512 * 1024
+_SOURCE_SCAN_MAX_FILES = 4000
+_CONNECTOR_SIGNATURES = {
+    "livekit": re.compile(r"livekit", re.IGNORECASE),
+    # ``vapi_python`` / ``@vapi-ai`` / ``api.vapi.ai`` match; ``vapid`` does not.
+    "vapi": re.compile(r"(?<![a-z0-9])vapi(?![a-z0-9])", re.IGNORECASE),
+    "retell": re.compile(r"retell", re.IGNORECASE),
+}
+
+
+def detect_source_connectors(archive: bytes) -> tuple[list[str], int]:
+    """Voice providers the submitted source talks to, and how many files were read.
+
+    A dependency/code grep is a heuristic, not a verdict: it exists so the platform can ask
+    for the right credential family before authoring rather than after, and so preflight can
+    show one family instead of every one. Explicit connectors bypass it entirely.
+    """
+    found: set[str] = set()
+    scanned = 0
+    try:
+        with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as tar:
+            for member in tar:
+                if not member.isfile() or member.size > _SOURCE_SCAN_MAX_FILE_BYTES:
+                    continue
+                path = "/" + member.name.lower()
+                if any(skip in path for skip in _SOURCE_SCAN_SKIP_DIRS):
+                    continue
+                name = path.rsplit("/", 1)[-1]
+                if name not in _SOURCE_SCAN_NAMES and not name.endswith(
+                    _SOURCE_SCAN_SUFFIXES
+                ):
+                    continue
+                handle = tar.extractfile(member)
+                if handle is None:
+                    continue
+                text = handle.read().decode("utf-8", "ignore")
+                scanned += 1
+                for connector, signature in _CONNECTOR_SIGNATURES.items():
+                    if connector not in found and signature.search(text):
+                        found.add(connector)
+                if scanned >= _SOURCE_SCAN_MAX_FILES or len(found) == len(
+                    _CONNECTOR_SIGNATURES
+                ):
+                    break
+    except (tarfile.TarError, OSError, EOFError):
+        return [], scanned
+    return sorted(found), scanned
+
+
+def reject_missing_provider_credentials(
+    payload: Mapping[str, Any], detected_connectors: Iterable[str]
+) -> None:
+    """Fail an ``auto`` run whose source names a voice provider it carries no credentials for.
+
+    Raised before any sandbox exists so a run that can only end in ``spawn_failed`` at connect
+    time never pays for authoring. ``remote`` sources own their credentials and are exempt.
+    """
+    from simulate.serializers.harness_job import missing_provider_credentials
+
+    if payload["source"]["kind"] == "remote":
+        return
+    detected = list(detected_connectors)
+    missing = missing_provider_credentials(payload["agent"], detected)
+    if not missing:
+        return
+    raise HostedHarnessError(
+        "provider_credentials_missing",
+        f"the source uses {', '.join(detected)} but the run carries no matching target "
+        f"credentials; add {', '.join(missing)} (or choose the connector explicitly) and "
+        "run again",
+        status_code=422,
+    )
+
+
+def reject_voice_contract_without_credentials(
+    payload: Mapping[str, Any], contract: Mapping[str, Any]
+) -> None:
+    """Same rule after authoring, for sources the dependency scan could not classify."""
+    from simulate.serializers.harness_job import (
+        CONNECTOR_ALIASES,
+        complete_provider_families,
+    )
+
+    agent = payload["agent"]
+    if (
+        payload["source"]["kind"] == "remote"
+        or str(agent.get("connector") or "auto").lower() != "auto"
+        or str(contract.get("modality") or "").lower() != "voice"
+        or complete_provider_families(agent)
+    ):
+        return
+    families = " or ".join(
+        "+".join(aliases) for aliases in CONNECTOR_ALIASES.values()
+    )
+    raise HostedHarnessError(
+        "provider_credentials_missing",
+        "authoring found a voice agent but the run carries no target provider credentials; "
+        f"add {families} and run again",
+        status_code=422,
+    )
+
 
 class HostedSourceAcquirer:
     _REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -1147,6 +1269,13 @@ class DaytonaHostedGateway:
         if payload != job.payload:
             job.payload = payload
             job.save(update_fields=["payload", "updated_at"])
+
+        # Cheapest point to learn what the agent talks to: the source is in hand and no
+        # sandbox or model call has been paid for yet. A voice source with no matching
+        # credentials cannot succeed, so stop here rather than after authoring.
+        if str(payload["agent"].get("connector") or "auto").lower() == "auto":
+            detected, _scanned = detect_source_connectors(source_archive)
+            reject_missing_provider_credentials(payload, detected)
 
         # An imported provider target is part of the agent source of truth. Give the isolated
         # authoring control process only the one provider credential it needs to fetch a
@@ -2586,6 +2715,17 @@ def pack_authoring_archive(authoring_root: Path) -> bytes:
     return archive.getvalue()
 
 
+def authored_contract(body: bytes) -> dict[str, Any]:
+    """The ``contract.json`` inside a frozen authoring archive, or ``{}`` when unreadable."""
+    try:
+        with tarfile.open(fileobj=io.BytesIO(body), mode="r:gz") as archive:
+            member = archive.extractfile("contract.json")
+            contract = json.load(member) if member is not None else {}
+    except (KeyError, tarfile.TarError, json.JSONDecodeError, OSError, TypeError):
+        return {}
+    return contract if isinstance(contract, dict) else {}
+
+
 def resolve_authored_connector(payload: dict[str, Any], body: bytes) -> dict[str, Any]:
     """Resolve ``auto`` only when frozen authoring evidence is unambiguous.
 
@@ -2598,13 +2738,7 @@ def resolve_authored_connector(payload: dict[str, Any], body: bytes) -> dict[str
     if str(agent.get("connector") or "auto").lower() != "auto":
         return resolved
 
-    try:
-        with tarfile.open(fileobj=io.BytesIO(body), mode="r:gz") as archive:
-            member = archive.extractfile("contract.json")
-            contract = json.load(member) if member is not None else {}
-    except (KeyError, tarfile.TarError, json.JSONDecodeError, OSError, TypeError):
-        return resolved
-
+    contract = authored_contract(body)
     aliases = {str(alias).upper() for alias in (agent.get("secret_refs") or {})}
     required = {"LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET"}
     if str(contract.get("modality") or "").lower() == "voice" and required <= aliases:
@@ -2887,6 +3021,10 @@ def store_authoring_archive(
         job.state = HostedHarnessJob.State.ADMITTED
         update_fields.extend(["stage_outputs", "current_stage", "state"])
     job.save(update_fields=update_fields)
+    # The archive is kept either way; the check only decides whether a run sandbox is worth
+    # creating. Sources the dependency scan could not classify are caught here instead.
+    if advance_lifecycle:
+        reject_voice_contract_without_credentials(payload, authored_contract(body))
     return object_key
 
 

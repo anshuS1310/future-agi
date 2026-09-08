@@ -295,23 +295,48 @@ CONNECTOR_ALIASES = {
 }
 
 
-def missing_provider_credentials(agent):
-    """Aliases the connector needs that the job does not carry.
-
-    ``auto`` is deliberately unresolved at admission time: fresh authoring may discover a chat
-    target that needs no voice-provider credential at all. Requiring an arbitrary provider family
-    here both rejects valid chat repositories and leaks unrelated credentials into their target
-    processes. Concrete connectors still fail fast, and an authored voice contract without its
-    required target credentials fails at the connector-resolution boundary.
-    """
+def present_provider_aliases(agent) -> set[str]:
+    """Target-provider aliases the job carries, by secret_ref or public config."""
     present = {str(name).upper() for name in (agent.get("secret_refs") or {})}
     config = agent.get("config") or {}
     if str(config.get("livekit_url") or config.get("LIVEKIT_URL") or "").strip():
         present.add("LIVEKIT_URL")
+    return present
+
+
+def complete_provider_families(agent) -> list[str]:
+    """Connectors whose whole credential family the job carries."""
+    present = present_provider_aliases(agent)
+    return [
+        connector
+        for connector, aliases in CONNECTOR_ALIASES.items()
+        if all(alias in present for alias in aliases)
+    ]
+
+
+def missing_provider_credentials(agent, detected_connectors=()):
+    """Aliases the connector needs that the job does not carry.
+
+    ``auto`` is unresolved at admission time: fresh authoring may discover a chat target that
+    needs no voice-provider credential at all, so nothing is required by default. When the
+    submitted source itself names a voice provider (``detected_connectors``), the run must carry
+    at least one complete family or it can only fail after authoring has already been paid for.
+    Any complete family satisfies the check: detection is a heuristic and the user may know
+    better than a dependency grep, while "no credentials at all" is never right for a voice agent.
+    """
+    present = present_provider_aliases(agent)
     connector = agent["connector"]
-    if connector == "auto":
+    if connector != "auto":
+        return [alias for alias in CONNECTOR_ALIASES[connector] if alias not in present]
+    detected = [name for name in detected_connectors if name in CONNECTOR_ALIASES]
+    if not detected or complete_provider_families(agent):
         return []
-    return [alias for alias in CONNECTOR_ALIASES[connector] if alias not in present]
+    return [
+        alias
+        for name in detected
+        for alias in CONNECTOR_ALIASES[name]
+        if alias not in present
+    ]
 
 
 class HarnessJobActionSerializer(serializers.Serializer):

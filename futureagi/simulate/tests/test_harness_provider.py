@@ -167,7 +167,7 @@ def test_daytona_preflight_rejects_known_egress_overflow(settings):
     assert response.data["error"] == "egress_domain_limit_exceeded"
 
 
-def test_daytona_preflight_reports_missing_target_credentials_instead_of_rejecting(settings):
+def test_daytona_preflight_requires_only_the_provider_the_source_uses(settings):
     settings.ALK_HOSTED_BASE_EGRESS_DOMAINS = []
     settings.ALK_HOSTED_SIMULATOR_SECRET_ENV = {}
     payload = _v1_payload()
@@ -177,23 +177,75 @@ def test_daytona_preflight_reports_missing_target_credentials_instead_of_rejecti
         build_absolute_uri=lambda _path: "https://harness.example.test/",
     )
 
-    response = DaytonaHarnessProvider().preflight(request)
+    def _status_by_name(response):
+        return {
+            item["environment_name"]: item["status"]
+            for item in response.data["credentials"]["requirements"]
+        }
+
+    with patch(
+        "simulate.services.harness_provider._preflight_source_connectors",
+        return_value=(["livekit"], 12),
+    ):
+        response = DaytonaHarnessProvider().preflight(request)
 
     assert response.status_code == 200
     assert response.data["ready_to_submit"] is False
-    choice = response.data["credentials"]["credential_choices"][0]
-    assert choice["satisfied"] is False
-    assert ["VAPI_API_KEY"] in choice["options"]
-    assert {
-        item["environment_name"]
-        for item in response.data["credentials"]["requirements"]
-        if item["status"] == "missing"
-    } >= {"LIVEKIT_URL", "VAPI_API_KEY", "RETELL_API_KEY"}
+    assert response.data["credentials"]["detected_connectors"] == ["livekit"]
+    assert response.data["credentials"]["scanned_files"] == 12
+    statuses = _status_by_name(response)
+    assert statuses["LIVEKIT_URL"] == "missing"
+    assert statuses["VAPI_API_KEY"] == "optional"
+    assert statuses["RETELL_API_KEY"] == "optional"
+    # One family is not a choice; the picker only appears for an ambiguous scan.
+    assert response.data["credentials"]["credential_choices"] == []
 
     payload["agent"]["secret_refs"] = _LIVEKIT_REFS
-    ready = DaytonaHarnessProvider().preflight(request)
+    with patch(
+        "simulate.services.harness_provider._preflight_source_connectors",
+        return_value=(["livekit"], 12),
+    ):
+        ready = DaytonaHarnessProvider().preflight(request)
     assert ready.data["ready_to_submit"] is True
-    assert ready.data["credentials"]["credential_choices"][0]["satisfied"] is True
+    assert _status_by_name(ready)["LIVEKIT_URL"] == "configured"
+
+
+def test_daytona_preflight_leaves_credentials_optional_when_source_is_unclassified(
+    settings,
+):
+    settings.ALK_HOSTED_BASE_EGRESS_DOMAINS = []
+    settings.ALK_HOSTED_SIMULATOR_SECRET_ENV = {}
+    payload = _v1_payload()
+    payload["agent"] = {"connector": "auto", "config": {}, "secret_refs": {}}
+    request = SimpleNamespace(
+        validated_data=payload,
+        build_absolute_uri=lambda _path: "https://harness.example.test/",
+    )
+
+    with patch(
+        "simulate.services.harness_provider._preflight_source_connectors",
+        return_value=([], 3),
+    ):
+        response = DaytonaHarnessProvider().preflight(request)
+
+    assert response.data["ready_to_submit"] is True
+    assert {
+        item["status"] for item in response.data["credentials"]["requirements"]
+    } == {"optional"}
+    assert response.data["credentials"]["credential_choices"] == []
+
+    with patch(
+        "simulate.services.harness_provider._preflight_source_connectors",
+        return_value=(["livekit", "retell"], 3),
+    ):
+        ambiguous = DaytonaHarnessProvider().preflight(request)
+    assert ambiguous.data["ready_to_submit"] is False
+    choice = ambiguous.data["credentials"]["credential_choices"][0]
+    assert choice["satisfied"] is False
+    assert choice["options"] == [
+        ["LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET"],
+        ["RETELL_API_KEY"],
+    ]
 
 
 def test_auto_source_submission_does_not_require_unrelated_voice_credentials():

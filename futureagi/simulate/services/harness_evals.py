@@ -29,8 +29,16 @@ MOST_SELECTED_EVALS = 8
 _OFFERED_NAME_PREFIX = "customer_agent"
 _OFFERED_FROM_EVAL_ID = 200
 
-# Judge a premise a suite need not contain, so they are never offered.
-_NOT_OFFERED = frozenset({"voice_mail_detection", "voicemail_handling"})
+# Never offered. The voicemail pair judge a premise a suite need not contain.
+# `conversation_hallucination` needs a `context` variable, and a call has no retrieval context to
+# bind it to, so it could only ever be pointed at something that is not what it is judging.
+_NOT_OFFERED = frozenset(
+    {
+        "voice_mail_detection",
+        "voicemail_handling",
+        "conversation_hallucination",
+    }
+)
 
 # These have no analogue in a chat transcript.
 _VOICE_ONLY_EVALS = frozenset(

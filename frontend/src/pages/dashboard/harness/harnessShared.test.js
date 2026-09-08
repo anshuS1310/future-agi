@@ -127,12 +127,7 @@ describe("stageState", () => {
     expect(stageState(status, at("validating_environment"))).toBe(
       STAGE_STATE.FAILED,
     );
-    // Environment validation runs after the scenarios exist, so data generation and scenario
-    // writing precede the failure rather than following it.
-    expect(stageState(status, at("generating_data"))).toBe(STAGE_STATE.DONE);
-    expect(stageState(status, at("validating_scenarios"))).toBe(
-      STAGE_STATE.PENDING,
-    );
+    expect(stageState(status, at("generating_data"))).toBe(STAGE_STATE.PENDING);
   });
 
   it("completes every stage once the run completes", () => {

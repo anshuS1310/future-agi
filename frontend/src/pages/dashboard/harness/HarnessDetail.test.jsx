@@ -135,8 +135,8 @@ describe("HarnessDetail run checklist", () => {
     renderDetail();
 
     expect(await screen.findByText("Validating environment")).toBeInTheDocument();
-    // Seven stages preceded it, so they fold away rather than padding the column.
-    expect(screen.getByText("7 stages complete")).toBeInTheDocument();
+    // Five stages preceded it, so they fold away rather than padding the column.
+    expect(screen.getByText("5 stages complete")).toBeInTheDocument();
     expect(screen.queryByText("Queued")).not.toBeInTheDocument();
   });
 

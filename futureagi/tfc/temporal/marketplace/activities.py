@@ -9,18 +9,35 @@ out of the batch, so Google redelivers it while the rest of the batch completes.
 
 import asyncio
 import json
+from datetime import datetime, timedelta
 
 import structlog
 from django.conf import settings
+from django.core.cache import cache
 from django.db import close_old_connections
+from django.utils import timezone
 from temporalio import activity
 
 from tfc.temporal.marketplace.types import DrainResult
 
 logger = structlog.get_logger(__name__)
 
-MAX_MESSAGES = 100
+# Sized against the activity's 5 minute start-to-close: each message can cost
+# two Procurement API calls of up to 30 seconds. 100 would not fit; 20 does.
+MAX_MESSAGES = 20
 PULL_TIMEOUT_SECONDS = 30
+
+# Set from here on every pull so the batch cannot outlive the deadline whatever
+# the subscription was created with. Pub/Sub's default is 10 seconds, which
+# expires mid-batch and redelivers messages that are still being handled.
+ACK_DEADLINE_SECONDS = 600
+
+# A message that keeps failing is dropped after this long, with its payload in
+# the log, so it cannot redeliver for ever. Long enough that an outage of the
+# Procurement API is a retry, not a loss; a dead-letter topic on the
+# subscription, if configured, gets there first.
+POISON_AFTER = timedelta(hours=24)
+POISON_CACHE_PREFIX = "gcp_marketplace_event_failure"
 
 
 def _subscription_path(subscriber):
@@ -52,6 +69,17 @@ def _drain_sync(heartbeat) -> dict:
             request={"subscription": path, "max_messages": MAX_MESSAGES},
             timeout=PULL_TIMEOUT_SECONDS,
         )
+        if not response.received_messages:
+            return {"events_processed": 0, "had_events": False}
+
+        subscriber.modify_ack_deadline(
+            request={
+                "subscription": path,
+                "ack_ids": [m.ack_id for m in response.received_messages],
+                "ack_deadline_seconds": ACK_DEADLINE_SECONDS,
+            },
+            timeout=PULL_TIMEOUT_SECONDS,
+        )
 
         handled_ack_ids = []
         for received in response.received_messages:
@@ -73,13 +101,20 @@ def _drain_sync(heartbeat) -> dict:
                     event_id=payload.get("eventId"),
                     event_type=payload.get("eventType"),
                 )
+                if _is_poison(payload):
+                    handled_ack_ids.append(received.ack_id)
                 continue
 
+            _clear_failures(payload)
             handled_ack_ids.append(received.ack_id)
 
         if handled_ack_ids:
+            # Bounded like pull. An ack that hangs would hold the activity past
+            # its heartbeat with the handlers' work already committed; a lost
+            # ack only means a redelivery that the event ledger deduplicates.
             subscriber.acknowledge(
-                request={"subscription": path, "ack_ids": handled_ack_ids}
+                request={"subscription": path, "ack_ids": handled_ack_ids},
+                timeout=PULL_TIMEOUT_SECONDS,
             )
 
         return {
@@ -88,6 +123,61 @@ def _drain_sync(heartbeat) -> dict:
         }
     finally:
         close_old_connections()
+
+
+def _failure_key(payload: dict) -> str | None:
+    event_id = payload.get("eventId")
+    return f"{POISON_CACHE_PREFIX}:{event_id}" if event_id else None
+
+
+def _is_poison(payload: dict) -> bool:
+    """Record this failure and say whether the message should be dropped.
+
+    Dropped means acked and logged at error level with the payload, so a human
+    can replay it with process_event once the cause is fixed. Redelivery is
+    at-least-once with no ordering, so nothing behind it is held up either way;
+    what a poison message costs is a failing handler and a log line every
+    delivery, for ever.
+    """
+    key = _failure_key(payload)
+    if key is None:
+        return True
+
+    now = timezone.now()
+    try:
+        record = cache.get(key) or {"first": now.isoformat(), "count": 0}
+        record["count"] += 1
+        cache.set(key, record, timeout=int(POISON_AFTER.total_seconds() * 2))
+    except Exception:
+        # The cache is bookkeeping, not the decision. Without it the message
+        # is simply retried, which is the safe answer.
+        logger.exception("gcp_marketplace_event_failure_count_unavailable")
+        return False
+
+    first = datetime.fromisoformat(record["first"])
+    if now - first < POISON_AFTER:
+        return False
+
+    logger.error(
+        "gcp_marketplace_event_dropped",
+        event_id=payload.get("eventId"),
+        event_type=payload.get("eventType"),
+        failures=record["count"],
+        first_failure=record["first"],
+        payload=payload,
+    )
+    cache.delete(key)
+    return True
+
+
+def _clear_failures(payload: dict) -> None:
+    key = _failure_key(payload)
+    if not key:
+        return
+    try:
+        cache.delete(key)
+    except Exception:
+        logger.exception("gcp_marketplace_event_failure_count_unavailable")
 
 
 @activity.defn(name="drain_gcp_marketplace_events_activity")

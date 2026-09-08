@@ -629,7 +629,7 @@ GCP_MARKETPLACE_PLAN_MAP = {
     "payg": ("payg", "monthly"),
     "scale": ("scale", "monthly"),
     "scale-P1Y": ("scale", "annual"),
-    "enterprise": ("enterprise", "monthly"),
+    # Enterprise is annual only on the portal.
     "enterprise-P1Y": ("enterprise", "annual"),
 }
 

@@ -69,7 +69,7 @@ def gcp_marketplace_verify_token(request):
             return _gm.bad_request("Missing GCP Marketplace token")
 
         try:
-            account_id, user_identity = verify_marketplace_token(token)
+            account_id, user_identity, audience = verify_marketplace_token(token)
         except Exception as token_error:
             # Signature, expiry and audience all land here, and an audience
             # mismatch fails every sign-up alike. The customer sees only
@@ -82,6 +82,7 @@ def gcp_marketplace_verify_token(request):
         logger.info(
             "gcp_marketplace_token_verified",
             account_id=account_id,
+            audience=audience,
             action="login" if has_user else "signup",
         )
 

@@ -20,6 +20,7 @@ from accounts.models.gcp_marketplace import (
     IN_SERVICE_STATES,
     GCPMarketplaceAccount,
     GCPMarketplaceEntitlement,
+    GCPMarketplaceEntitlementState,
     GCPMarketplaceProcessedEvent,
 )
 from accounts.services.gcp_procurement import gcp_procurement, resolve_plan
@@ -46,6 +47,12 @@ def _parse_time(value):
     return parse_datetime(value)
 
 
+def _is_not_found(exc: BaseException) -> bool:
+    from googleapiclient.errors import HttpError
+
+    return isinstance(exc, HttpError) and exc.status_code == 404
+
+
 def _subject_id(payload: dict) -> str:
     for key in ("entitlement", "account"):
         subject = payload.get(key) or {}
@@ -70,8 +77,17 @@ def _refresh_plan_caches(organization_id) -> None:
         from ee.usage.services.entitlements import invalidate_plan_caches
         from ee.usage.services.metering import publish_quotas_for_org
 
-        invalidate_plan_caches(str(organization_id))
-        publish_quotas_for_org(str(organization_id))
+        try:
+            invalidate_plan_caches(str(organization_id))
+            publish_quotas_for_org(str(organization_id))
+        except Exception:
+            # The plan is already committed. Raising here would fail an event
+            # that succeeded and, outside a handler, abort a reconcile run for
+            # every org after this one. The cache expires on its own.
+            logger.exception(
+                "gcp_marketplace_plan_cache_refresh_failed",
+                organization_id=str(organization_id),
+            )
 
     transaction.on_commit(_refresh)
 
@@ -127,6 +143,48 @@ def _downgrade_to_free(entitlement_row: GCPMarketplaceEntitlement) -> None:
         "gcp_marketplace_downgraded_to_free",
         entitlement_id=entitlement_row.entitlement_id,
     )
+
+
+SECOND_ENTITLEMENT_REASON = (
+    "This organization already has an active Future AGI subscription. "
+    "Change plans from the existing subscription instead of buying a second one."
+)
+
+
+def other_in_service_entitlement(
+    row: GCPMarketplaceEntitlement,
+) -> GCPMarketplaceEntitlement | None:
+    """Another live entitlement on the same organization, if there is one.
+
+    Usage is metered per organization, so a second entitlement cannot be
+    billed separately: whichever plan applied last would win and the other
+    would be paid for and ignored. One subscription per organization.
+    """
+    if not row.organization_id:
+        return None
+    return (
+        GCPMarketplaceEntitlement.objects.filter(
+            organization_id=row.organization_id, status__in=IN_SERVICE_STATES
+        )
+        .exclude(pk=row.pk)
+        .order_by("effective_at", "created_at")
+        .first()
+    )
+
+
+def reject_duplicate_entitlement(row: GCPMarketplaceEntitlement) -> bool:
+    """Reject `row` if its organization already has a live entitlement."""
+    existing = other_in_service_entitlement(row)
+    if existing is None:
+        return False
+    logger.warning(
+        "gcp_marketplace_duplicate_entitlement_rejected",
+        entitlement_id=row.entitlement_id,
+        existing_entitlement_id=existing.entitlement_id,
+        organization_id=str(row.organization_id),
+    )
+    gcp_procurement.reject_entitlement(row.entitlement_id, SECOND_ENTITLEMENT_REASON)
+    return True
 
 
 def sync_entitlement(entitlement_id: str) -> GCPMarketplaceEntitlement | None:
@@ -220,6 +278,20 @@ def handle_entitlement_creation_requested(payload: dict) -> None:
     if row is None:
         return
 
+    if row.status != GCPMarketplaceEntitlementState.ACTIVATION_REQUESTED:
+        # Already approved. approve runs inside the handler's transaction, so a
+        # lost response rolls back and the message redelivers; the state just
+        # fetched from Google, not the message, decides whether to call again.
+        logger.info(
+            "gcp_marketplace_entitlement_approval_not_pending",
+            entitlement_id=row.entitlement_id,
+            status=row.status,
+        )
+        return
+
+    if reject_duplicate_entitlement(row):
+        return
+
     if not row.account_id or not row.account.approved_at:
         logger.info(
             "gcp_marketplace_entitlement_held_for_signup",
@@ -238,7 +310,10 @@ def handle_entitlement_active(payload: dict) -> None:
     _apply_plan(row)
 
     if not row.usage_reporting_id:
-        logger.warning(
+        # The plan is applied and the customer is consuming, but nothing can
+        # be billed without a consumer id and no further event is owed to us.
+        # reconcile_entitlement_plans re-fetches this hourly until it appears.
+        logger.error(
             "gcp_marketplace_missing_usage_reporting_id",
             entitlement_id=row.entitlement_id,
         )
@@ -248,6 +323,15 @@ def handle_plan_change_requested(payload: dict) -> None:
     """Approve the pending plan. Access does not change until PLAN_CHANGED."""
     row = sync_entitlement(_subject_id(payload))
     if row is None:
+        return
+    if row.status != GCPMarketplaceEntitlementState.PENDING_PLAN_CHANGE_APPROVAL:
+        # Same guard as handle_entitlement_creation_requested: a redelivery
+        # after a lost approve response must not approve twice.
+        logger.info(
+            "gcp_marketplace_plan_change_approval_not_pending",
+            entitlement_id=row.entitlement_id,
+            status=row.status,
+        )
         return
     if not row.new_pending_plan:
         logger.warning(
@@ -281,6 +365,9 @@ def _report_final_window_after_commit(row: GCPMarketplaceEntitlement) -> None:
             report_final_window(row)
         except Exception:
             # Raising after commit acks nothing and cannot undo the downgrade.
+            # Not lost: the checkpoints hold the snapshot, and the hourly sweep
+            # resends any left FAILED. An unknown outcome stays PENDING for
+            # reconcile_usage, as everywhere else.
             logger.exception(
                 "gcp_marketplace_final_usage_report_failed",
                 entitlement_id=row.entitlement_id,
@@ -320,6 +407,60 @@ def handle_offer_accepted(payload: dict) -> None:
     _apply_plan(row)
 
 
+def handle_entitlement_deleted(payload: dict) -> None:
+    """Google purged its record, about 60 days after cancellation.
+
+    Nothing is deleted here. Access was handed back to card billing at
+    cancellation, so the organization may since have become a direct
+    customer, and deleting it would destroy a paying account. Whether an
+    abandoned organization should be removed is a support decision, so the
+    two cases are told apart in the log and left there.
+    """
+    entitlement_id = _subject_id(payload)
+    try:
+        row = sync_entitlement(entitlement_id)
+    except Exception as exc:
+        # Google has purged the record, so the re-fetch can answer 404. That
+        # is the event's meaning, not a failure: fall back to the local row
+        # rather than redeliver until the poison guard drops it.
+        if not _is_not_found(exc):
+            raise
+        row = GCPMarketplaceEntitlement.objects.filter(
+            entitlement_id=entitlement_id
+        ).first()
+        logger.info(
+            "gcp_marketplace_entitlement_gone_on_google", entitlement_id=entitlement_id
+        )
+    if row is None or not row.organization_id or OrganizationSubscription is None:
+        return
+
+    subscription = OrganizationSubscription.objects.filter(
+        organization_id=row.organization_id
+    ).first()
+    continues = subscription is not None and (
+        subscription.is_marketplace_billed()
+        or subscription.plan != PlanChoices.FREE
+        or bool(subscription.stripe_subscription_id)
+    )
+
+    if continues:
+        logger.info(
+            "gcp_marketplace_entitlement_deleted_org_continues",
+            entitlement_id=row.entitlement_id,
+            organization_id=str(row.organization_id),
+            plan=subscription.plan,
+            billing_method=subscription.billing_method,
+        )
+        return
+
+    logger.error(
+        "gcp_marketplace_entitlement_deleted_org_abandoned",
+        entitlement_id=row.entitlement_id,
+        organization_id=str(row.organization_id),
+        note="Google expects customer data removed; review and delete by hand",
+    )
+
+
 def handle_sync_only(payload: dict) -> None:
     """Mirror state without touching access.
 
@@ -344,59 +485,110 @@ HANDLERS = {
     "ENTITLEMENT_CANCELLED": handle_entitlement_cancelled,
     "ENTITLEMENT_RENEWED": handle_entitlement_renewed,
     "ENTITLEMENT_OFFER_ENDED": handle_sync_only,
-    "ENTITLEMENT_DELETED": handle_sync_only,
+    "ENTITLEMENT_DELETED": handle_entitlement_deleted,
 }
 
 
 def reconcile_entitlement_plans() -> dict:
-    """Re-apply the plan for in-service entitlements whose organization drifted.
+    """Hourly repair for in-service entitlements the events could not finish.
 
-    _apply_plan skips an unmapped plan id so the message acks, which leaves the
-    customer on free with nothing to retry: the event is terminal and Google
-    never redelivers it. This is that retry.
+    Two gaps, both terminal events Google never redelivers:
+
+    - _apply_plan skips an unmapped plan id so the message acks, leaving the
+      customer on free until the mapping is added. Re-applied here.
+    - ENTITLEMENT_ACTIVE can arrive without usageReportingId, leaving a paid
+      customer nothing can bill. Re-fetched here until Google supplies it.
+
+    Each row is isolated: one org's bad row or Redis blip must not strand
+    every org after it.
     """
+    counts = {
+        "checked": 0,
+        "repaired": 0,
+        "unmapped": 0,
+        "consumer_id_recovered": 0,
+        "consumer_id_missing": 0,
+        "failed": 0,
+    }
     if OrganizationSubscription is None:
-        return {"checked": 0, "repaired": 0, "unmapped": 0}
-
-    checked = repaired = unmapped = 0
+        return counts
 
     entitlements = GCPMarketplaceEntitlement.objects.filter(
         status__in=IN_SERVICE_STATES, organization__isnull=False
     ).iterator(chunk_size=200)
 
     for row in entitlements:
-        checked += 1
+        counts["checked"] += 1
         try:
-            plan, interval = resolve_plan(row.plan_id)
-        except ValueError:
-            unmapped += 1
-            logger.error(
-                "gcp_marketplace_unmapped_plan_unresolved",
+            _reconcile_entitlement_plan(row, counts)
+        except Exception:
+            counts["failed"] += 1
+            logger.exception(
+                "gcp_marketplace_plan_reconcile_failed",
                 entitlement_id=row.entitlement_id,
-                plan_id=row.plan_id,
                 organization_id=str(row.organization_id),
             )
-            continue
 
-        matches = OrganizationSubscription.objects.filter(
-            organization_id=row.organization_id,
-            plan=plan,
-            billing_interval=interval,
-            billing_method=BillingMethodChoices.GCP_MARKETPLACE,
-        ).exists()
-        if matches:
-            continue
-
-        repaired += 1
-        logger.warning(
-            "gcp_marketplace_plan_drift_repaired",
-            entitlement_id=row.entitlement_id,
-            organization_id=str(row.organization_id),
-            plan=plan,
+    if counts["failed"]:
+        logger.error(
+            "gcp_marketplace_plan_reconcile_incomplete", failed=counts["failed"]
         )
-        _apply_plan(row)
+    return counts
 
-    return {"checked": checked, "repaired": repaired, "unmapped": unmapped}
+
+def _reconcile_entitlement_plan(row: GCPMarketplaceEntitlement, counts: dict) -> None:
+    if not row.usage_reporting_id:
+        refreshed = sync_entitlement(row.entitlement_id)
+        if refreshed is not None:
+            row = refreshed
+        if row.status not in IN_SERVICE_STATES:
+            # The re-fetch just showed it left service. Re-applying the paid
+            # plan now would undo a cancellation the event handler will, or
+            # already did, process.
+            return
+        if row.usage_reporting_id:
+            counts["consumer_id_recovered"] += 1
+            logger.info(
+                "gcp_marketplace_usage_reporting_id_recovered",
+                entitlement_id=row.entitlement_id,
+            )
+        else:
+            counts["consumer_id_missing"] += 1
+            logger.error(
+                "gcp_marketplace_missing_usage_reporting_id",
+                entitlement_id=row.entitlement_id,
+                organization_id=str(row.organization_id),
+            )
+
+    try:
+        plan, interval = resolve_plan(row.plan_id)
+    except ValueError:
+        counts["unmapped"] += 1
+        logger.error(
+            "gcp_marketplace_unmapped_plan_unresolved",
+            entitlement_id=row.entitlement_id,
+            plan_id=row.plan_id,
+            organization_id=str(row.organization_id),
+        )
+        return
+
+    matches = OrganizationSubscription.objects.filter(
+        organization_id=row.organization_id,
+        plan=plan,
+        billing_interval=interval,
+        billing_method=BillingMethodChoices.GCP_MARKETPLACE,
+    ).exists()
+    if matches:
+        return
+
+    counts["repaired"] += 1
+    logger.warning(
+        "gcp_marketplace_plan_drift_repaired",
+        entitlement_id=row.entitlement_id,
+        organization_id=str(row.organization_id),
+        plan=plan,
+    )
+    _apply_plan(row)
 
 
 def process_event(payload: dict) -> bool:

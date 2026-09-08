@@ -45,10 +45,14 @@ def reconcile_gcp_marketplace_usage_activity():
 @temporal_activity(time_limit=900, queue="default")
 def reconcile_gcp_marketplace_plans_activity():
     from accounts.gcp_marketplace_events import reconcile_entitlement_plans
+    from accounts.gcp_marketplace_utils import reconcile_unapproved_accounts
 
     result = reconcile_entitlement_plans()
     logger.info("gcp_marketplace_plan_reconciliation_run", **result)
-    return result
+
+    accounts = reconcile_unapproved_accounts()
+    logger.info("gcp_marketplace_signup_reconciliation_run", **accounts)
+    return {**result, "accounts": accounts}
 
 
 MARKETPLACE_SCHEDULES = [

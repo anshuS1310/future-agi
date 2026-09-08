@@ -19,6 +19,7 @@ completes, so whichever runs second performs the entitlement approval.
 """
 
 import uuid as _uuid
+from urllib.parse import urlsplit
 
 import structlog
 from django.conf import settings
@@ -86,12 +87,46 @@ def _unverified_audience(token: str):
         return "<unreadable>"
 
 
-def verify_marketplace_token(token: str) -> tuple[str, str]:
-    """Verify the x-gcp-marketplace-token JWT and return its two identifiers.
+def _host_of(value: str) -> str:
+    value = (value or "").strip()
+    if not value:
+        return ""
+    if "://" not in value:
+        value = f"https://{value}"
+    return urlsplit(value).hostname or ""
 
-    Returns the procurement account id, which names the subscription, and the
-    obfuscated Google user id, which names the person. The second is optional on
-    Google's side, so it can come back empty.
+
+def token_audiences() -> list[str]:
+    """Accepted `aud` values for the sign-up token.
+
+    Google documents the claim only as the partner's domain, without saying
+    whether that is the host of the Sign up URL or the apex. With no explicit
+    setting, accept every domain we own that Google could mean: the API host,
+    the app host and their apex. The token is still signature-checked, so a
+    wider list costs nothing; a too-narrow one fails every sign-up.
+    """
+    if settings.GCP_MARKETPLACE_TOKEN_AUDIENCES:
+        return settings.GCP_MARKETPLACE_TOKEN_AUDIENCES
+
+    candidates = []
+    for host in (_host_of(settings.BASE_URL), _host_of(settings.APP_URL)):
+        if not host:
+            continue
+        candidates.append(host)
+        apex = ".".join(host.split(".")[-2:])
+        candidates.append(apex)
+
+    seen = set()
+    return [c for c in candidates if not (c in seen or seen.add(c))]
+
+
+def verify_marketplace_token(token: str) -> tuple[str, str, str]:
+    """Verify the x-gcp-marketplace-token JWT and return its identifiers.
+
+    Returns the procurement account id, which names the subscription, the
+    obfuscated Google user id, which names the person, and the `aud` claim so
+    the caller can log which of the accepted domains Google actually sends.
+    The user id is optional on Google's side, so it can come back empty.
 
     This endpoint is unauthenticated and provisions paid accounts, so every
     check matters: an unverified `sub` is a free-subscription vulnerability.
@@ -106,11 +141,11 @@ def verify_marketplace_token(token: str) -> tuple[str, str]:
     from google.auth.transport import requests as google_requests
     from google.oauth2 import id_token
 
-    accepted = settings.GCP_MARKETPLACE_TOKEN_AUDIENCES
+    accepted = token_audiences()
     if not accepted:
         raise ValueError(
-            "GCP_MARKETPLACE_TOKEN_AUDIENCES is not set. Google sends the "
-            "domain hosting the product as aud, not the service name."
+            "No accepted audience: set GCP_MARKETPLACE_TOKEN_AUDIENCES, or "
+            "BASE_URL and APP_URL so it can be derived."
         )
 
     # The list goes to the library, not a check here: audience=None is skipped
@@ -141,7 +176,7 @@ def verify_marketplace_token(token: str) -> tuple[str, str]:
 
     user_identity = (payload.get("google") or {}).get("user_identity") or ""
 
-    return account_id, user_identity
+    return account_id, user_identity, str(payload.get("aud") or "")
 
 
 def _mark_billed_by_marketplace(organization) -> None:
@@ -291,13 +326,51 @@ def _approve_signup(gcp_account: GCPMarketplaceAccount) -> None:
     pending is the correct outcome for a customer who never finishes the form.
     """
     account = gcp_procurement.get_account(gcp_account.procurement_account_id)
-    if not gcp_procurement.pending_approval(account):
+    if gcp_procurement.pending_approval(account):
+        gcp_procurement.approve_account(gcp_account.procurement_account_id)
+    elif gcp_account.approved_at:
         return
-
-    gcp_procurement.approve_account(gcp_account.procurement_account_id)
+    # Either just approved, or approved on a previous attempt whose response
+    # was lost. Both mean Google holds the approval, so record it: held
+    # entitlements are released on approved_at, and a null there would keep
+    # them waiting for an approval that already happened.
     gcp_account.approved_at = _now()
     gcp_account.state = GCPMarketplaceAccountState.ACTIVE
     gcp_account.save(update_fields=["approved_at", "state", "updated_at"])
+
+
+def reconcile_unapproved_accounts() -> dict:
+    """Finish sign-ups whose Procurement approval never went through.
+
+    process_signup creates the User inside a transaction and calls Google
+    afterwards. If that call fails and the customer never resubmits, the
+    account stays unapproved on Google's side, the entitlement stays held,
+    and nothing retries. This is the retry, run hourly.
+    """
+    counts = {"checked": 0, "approved": 0, "failed": 0}
+    waiting = GCPMarketplaceAccount.objects.filter(
+        approved_at__isnull=True, organization__isnull=False
+    ).select_related("organization")
+
+    for gcp_account in waiting:
+        if not gcp_account.organization.members.exists():
+            continue
+        counts["checked"] += 1
+        try:
+            _approve_signup(gcp_account)
+            approve_pending_entitlements(gcp_account)
+            counts["approved"] += 1
+            logger.warning(
+                "gcp_marketplace_signup_approval_recovered",
+                account_id=gcp_account.procurement_account_id,
+            )
+        except Exception:
+            counts["failed"] += 1
+            logger.exception(
+                "gcp_marketplace_signup_approval_retry_failed",
+                account_id=gcp_account.procurement_account_id,
+            )
+    return counts
 
 
 def _link_orphan_entitlements(gcp_account: GCPMarketplaceAccount) -> int:
@@ -336,14 +409,20 @@ def approve_pending_entitlements(gcp_account: GCPMarketplaceAccount) -> int:
     """
     _link_orphan_entitlements(gcp_account)
 
+    from accounts.gcp_marketplace_events import reject_duplicate_entitlement
+
     pending = GCPMarketplaceEntitlement.objects.filter(
         account=gcp_account,
         status=GCPMarketplaceEntitlementState.ACTIVATION_REQUESTED,
-    )
+    ).order_by("effective_at", "created_at")
 
     approved = 0
     for entitlement in pending:
         try:
+            # Oldest first. Once one is approved the rest are duplicates of a
+            # subscription this organization already holds.
+            if approved and reject_duplicate_entitlement(entitlement):
+                continue
             gcp_procurement.approve_entitlement(entitlement.entitlement_id)
             approved += 1
         except Exception:

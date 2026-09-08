@@ -10,6 +10,8 @@ what prevents a window being reported twice.
 """
 
 import json
+import socket
+import threading
 
 import structlog
 from django.conf import settings
@@ -17,6 +19,15 @@ from django.conf import settings
 logger = structlog.get_logger(__name__)
 
 CLOUD_SCOPE = "https://www.googleapis.com/auth/cloud-platform"
+
+# Bounded so a hung socket cannot outlive the Temporal heartbeat that runs the
+# caller. The drain heartbeats between messages, not during one, so an
+# unbounded call here would fail the activity while the thread stays blocked.
+REQUEST_TIMEOUT_SECONDS = 30
+
+# Reads are retried on 5xx/429. report is not: a retry after a lost response
+# is exactly the double-charge the checkpoint table exists to prevent.
+READ_RETRIES = 3
 
 
 class GCPServiceControlNotConfigured(RuntimeError):
@@ -27,6 +38,8 @@ class GCPServiceControlService:
     def __init__(self, service_name: str | None = None):
         self._service_name = service_name or settings.GCP_MARKETPLACE_SERVICE_NAME
         self._client = None
+        self._credentials_cache = None
+        self._local = threading.local()
 
     @property
     def service_name(self) -> str:
@@ -40,18 +53,42 @@ class GCPServiceControlService:
         return f"{self.service_name}/{metric_id}"
 
     def _credentials(self):
+        if self._credentials_cache is not None:
+            return self._credentials_cache
+
         from google.oauth2 import service_account
 
         sa_json = settings.GCP_MARKETPLACE_SA_JSON
         if sa_json:
-            return service_account.Credentials.from_service_account_info(
-                json.loads(sa_json), scopes=[CLOUD_SCOPE]
+            self._credentials_cache = (
+                service_account.Credentials.from_service_account_info(
+                    json.loads(sa_json), scopes=[CLOUD_SCOPE]
+                )
             )
+        else:
+            import google.auth
 
-        import google.auth
+            self._credentials_cache, _ = google.auth.default(scopes=[CLOUD_SCOPE])
+        return self._credentials_cache
 
-        credentials, _ = google.auth.default(scopes=[CLOUD_SCOPE])
-        return credentials
+    def _authorized_http(self):
+        import httplib2
+        from google_auth_httplib2 import AuthorizedHttp
+
+        return AuthorizedHttp(
+            self._credentials(), http=httplib2.Http(timeout=REQUEST_TIMEOUT_SECONDS)
+        )
+
+    def _http(self):
+        """One transport per thread.
+
+        httplib2.Http is not thread-safe, and the hourly report and a
+        cancellation's final report can run at the same time in one worker.
+        """
+        http = getattr(self._local, "http", None)
+        if http is None:
+            http = self._local.http = self._authorized_http()
+        return http
 
     @property
     def client(self):
@@ -62,10 +99,28 @@ class GCPServiceControlService:
             self._client = build(
                 "servicecontrol",
                 "v1",
-                credentials=self._credentials(),
+                http=self._authorized_http(),
                 cache_discovery=False,
             )
         return self._client
+
+    @staticmethod
+    def is_definitive_failure(exc: BaseException) -> bool:
+        """Whether Google provably did not record the request.
+
+        True for a 4xx (Google answered and refused) and for failures raised
+        before a byte was sent (unknown host, connection refused). Everything
+        else, timeouts and 5xx included, may have been processed: the caller
+        must treat those as unknown, not failed.
+        """
+        from googleapiclient.errors import HttpError
+        from httplib2 import ServerNotFoundError
+
+        if isinstance(exc, HttpError):
+            return 400 <= exc.status_code < 500
+        return isinstance(
+            exc, (ServerNotFoundError, ConnectionRefusedError, socket.gaierror)
+        )
 
     def build_operation(
         self,
@@ -119,7 +174,7 @@ class GCPServiceControlService:
         response = (
             self.client.services()
             .check(serviceName=self.service_name, body={"operation": body})
-            .execute()
+            .execute(http=self._http(), num_retries=READ_RETRIES)
         )
 
         errors = response.get("checkErrors") or []
@@ -151,10 +206,11 @@ class GCPServiceControlService:
         if user_labels:
             operations = [{**op, "userLabels": user_labels} for op in operations]
 
+        # Never retried, see READ_RETRIES.
         response = (
             self.client.services()
             .report(serviceName=self.service_name, body={"operations": operations})
-            .execute()
+            .execute(http=self._http())
         )
 
         errors = response.get("reportErrors") or []

@@ -11,9 +11,12 @@ and lose the event, so nothing here returns None on failure.
 """
 
 import json
+import threading
 
 import structlog
 from django.conf import settings
+
+from accounts.services.gcp_service_control import READ_RETRIES, REQUEST_TIMEOUT_SECONDS
 
 logger = structlog.get_logger(__name__)
 
@@ -32,6 +35,8 @@ class GCPProcurementService:
     def __init__(self, provider_id: str | None = None):
         self._provider_id = provider_id or settings.GCP_MARKETPLACE_PROVIDER_ID
         self._client = None
+        self._credentials_cache = None
+        self._local = threading.local()
 
     @property
     def provider_id(self) -> str:
@@ -40,19 +45,50 @@ class GCPProcurementService:
         return self._provider_id
 
     def _credentials(self):
+        if self._credentials_cache is not None:
+            return self._credentials_cache
+
         from google.oauth2 import service_account
 
         sa_json = settings.GCP_MARKETPLACE_SA_JSON
         if sa_json:
-            info = json.loads(sa_json)
-            return service_account.Credentials.from_service_account_info(
-                info, scopes=[CLOUD_SCOPE]
+            self._credentials_cache = (
+                service_account.Credentials.from_service_account_info(
+                    json.loads(sa_json), scopes=[CLOUD_SCOPE]
+                )
             )
+        else:
+            import google.auth
 
-        import google.auth
+            self._credentials_cache, _ = google.auth.default(scopes=[CLOUD_SCOPE])
+        return self._credentials_cache
 
-        credentials, _ = google.auth.default(scopes=[CLOUD_SCOPE])
-        return credentials
+    def _authorized_http(self):
+        import httplib2
+        from google_auth_httplib2 import AuthorizedHttp
+
+        return AuthorizedHttp(
+            self._credentials(), http=httplib2.Http(timeout=REQUEST_TIMEOUT_SECONDS)
+        )
+
+    def _http(self):
+        """One transport per thread: httplib2.Http is not thread-safe."""
+        http = getattr(self._local, "http", None)
+        if http is None:
+            http = self._local.http = self._authorized_http()
+        return http
+
+    def _read(self, request):
+        return request.execute(http=self._http(), num_retries=READ_RETRIES)
+
+    def _write(self, request):
+        """Approvals are not retried by the transport.
+
+        Google does not document approve as idempotent. A lost response leaves
+        the handler's transaction unacked, so Pub/Sub redelivers and the handler
+        re-checks the entitlement state before calling again.
+        """
+        return request.execute(http=self._http())
 
     @property
     def client(self):
@@ -63,7 +99,7 @@ class GCPProcurementService:
             self._client = build(
                 "cloudcommerceprocurement",
                 "v1",
-                credentials=self._credentials(),
+                http=self._authorized_http(),
                 cache_discovery=False,
             )
         return self._client
@@ -84,25 +120,21 @@ class GCPProcurementService:
     # ── accounts ──────────────────────────────────────────────────────────
 
     def get_account(self, account_id: str) -> dict:
-        return (
-            self.client.providers()
-            .accounts()
-            .get(name=self.account_name(account_id))
-            .execute()
+        return self._read(
+            self.client.providers().accounts().get(name=self.account_name(account_id))
         )
 
     def approve_account(
         self, account_id: str, approval_name: str = SIGNUP_APPROVAL
     ) -> dict:
         logger.info("gcp_marketplace_account_approve", account_id=account_id)
-        return (
+        return self._write(
             self.client.providers()
             .accounts()
             .approve(
                 name=self.account_name(account_id),
                 body={"approvalName": approval_name},
             )
-            .execute()
         )
 
     # def reject_account(
@@ -122,14 +154,13 @@ class GCPProcurementService:
     #     )
 
     def list_accounts(self, page_token: str | None = None) -> dict:
-        return (
+        return self._read(
             self.client.providers()
             .accounts()
             .list(
                 parent=f"providers/{self.provider_id}",
                 pageToken=page_token,
             )
-            .execute()
         )
 
     @staticmethod
@@ -148,11 +179,10 @@ class GCPProcurementService:
     # ── entitlements ──────────────────────────────────────────────────────
 
     def get_entitlement(self, entitlement_id: str) -> dict:
-        return (
+        return self._read(
             self.client.providers()
             .entitlements()
             .get(name=self.entitlement_name(entitlement_id))
-            .execute()
         )
 
     def approve_entitlement(
@@ -164,11 +194,10 @@ class GCPProcurementService:
         body: dict = {}
         if entitlement_migrated:
             body["entitlementMigrated"] = True
-        return (
+        return self._write(
             self.client.providers()
             .entitlements()
             .approve(name=self.entitlement_name(entitlement_id), body=body)
-            .execute()
         )
 
     def approve_plan_change(self, entitlement_id: str, pending_plan: str) -> dict:
@@ -178,31 +207,30 @@ class GCPProcurementService:
             entitlement_id=entitlement_id,
             pending_plan=pending_plan,
         )
-        return (
+        return self._write(
             self.client.providers()
             .entitlements()
             .approvePlanChange(
                 name=self.entitlement_name(entitlement_id),
                 body={"pendingPlanName": pending_plan},
             )
-            .execute()
         )
 
-    # def reject_entitlement(self, entitlement_id: str, reason: str) -> dict:
-    #     logger.warning(
-    #         "gcp_marketplace_entitlement_reject",
-    #         entitlement_id=entitlement_id,
-    #         reason=reason,
-    #     )
-    #     return (
-    #         self.client.providers()
-    #         .entitlements()
-    #         .reject(
-    #             name=self.entitlement_name(entitlement_id),
-    #             body={"reason": reason},
-    #         )
-    #         .execute()
-    #     )
+    def reject_entitlement(self, entitlement_id: str, reason: str) -> dict:
+        """Refuse a purchase. The customer is not charged for a rejected one."""
+        logger.warning(
+            "gcp_marketplace_entitlement_reject",
+            entitlement_id=entitlement_id,
+            reason=reason,
+        )
+        return self._write(
+            self.client.providers()
+            .entitlements()
+            .reject(
+                name=self.entitlement_name(entitlement_id),
+                body={"reason": reason},
+            )
+        )
 
     # def reject_plan_change(
     #     self, entitlement_id: str, pending_plan: str, reason: str
@@ -229,14 +257,13 @@ class GCPProcurementService:
             entitlement_id=entitlement_id,
             reason=reason,
         )
-        return (
+        return self._write(
             self.client.providers()
             .entitlements()
             .suspend(
                 name=self.entitlement_name(entitlement_id),
                 body={"reason": reason},
             )
-            .execute()
         )
 
     def list_entitlements(
@@ -249,7 +276,7 @@ class GCPProcurementService:
         }
         if account_id:
             kwargs["filter"] = f"account={self.account_name(account_id)}"
-        return self.client.providers().entitlements().list(**kwargs).execute()
+        return self._read(self.client.providers().entitlements().list(**kwargs))
 
     def iter_entitlements(self, account_id: str | None = None):
         """Yields every entitlement, following pagination."""

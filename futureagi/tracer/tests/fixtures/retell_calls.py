@@ -37,8 +37,12 @@ def list_item(
         "call_status": call_status,
         "start_timestamp": start_ms,
         "end_timestamp": end_ms,
-        "duration_ms": (end_ms - start_ms) if end_ms is not None and start_ms is not None else None,
-        "disconnection_reason": "user_hangup" if call_status == "ended" else "error_llm_websocket_lost_connection",
+        "duration_ms": (end_ms - start_ms)
+        if end_ms is not None and start_ms is not None
+        else None,
+        "disconnection_reason": "user_hangup"
+        if call_status == "ended"
+        else "error_llm_websocket_lost_connection",
         "metadata": {},
         "retell_llm_dynamic_variables": {},
         "collected_dynamic_variables": {},
@@ -60,9 +64,36 @@ def list_item(
         },
         "llm_token_usage": {"values": [512, 640], "average": 576, "num_requests": 2},
         "latency": {
-            "e2e": {"p50": 900, "p90": 1300, "p95": 1450, "p99": 1700, "min": 700, "max": 1800, "num": 12, "values": [900, 1300]},
-            "llm": {"p50": 500, "p90": 800, "p95": 900, "p99": 1100, "min": 400, "max": 1200, "num": 12, "values": [500, 800]},
-            "tts": {"p50": 250, "p90": 400, "p95": 450, "p99": 500, "min": 200, "max": 520, "num": 12, "values": [250, 400]},
+            "e2e": {
+                "p50": 900,
+                "p90": 1300,
+                "p95": 1450,
+                "p99": 1700,
+                "min": 700,
+                "max": 1800,
+                "num": 12,
+                "values": [900, 1300],
+            },
+            "llm": {
+                "p50": 500,
+                "p90": 800,
+                "p95": 900,
+                "p99": 1100,
+                "min": 400,
+                "max": 1200,
+                "num": 12,
+                "values": [500, 800],
+            },
+            "tts": {
+                "p50": 250,
+                "p90": 400,
+                "p95": 450,
+                "p99": 500,
+                "min": 200,
+                "max": 520,
+                "num": 12,
+                "values": [250, 400],
+            },
         },
     }
     item.update(overrides)
@@ -89,22 +120,72 @@ def detail(
         {
             "transcript": "Agent: Hello, how can I help?\nUser: What are your opening hours?",
             "transcript_object": [
-                {"role": "agent", "content": "Hello, how can I help?", "words": [{"word": "Hello,", "start": 0.4, "end": 0.7}, {"word": "help?", "start": 1.6, "end": 1.9}]},
-                {"role": "user", "content": "What are your opening hours?", "words": [{"word": "What", "start": 2.5, "end": 2.7}, {"word": "hours?", "start": 3.8, "end": 4.1}]},
+                {
+                    "role": "agent",
+                    "content": "Hello, how can I help?",
+                    "words": [
+                        {"word": "Hello,", "start": 0.4, "end": 0.7},
+                        {"word": "help?", "start": 1.6, "end": 1.9},
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": "What are your opening hours?",
+                    "words": [
+                        {"word": "What", "start": 2.5, "end": 2.7},
+                        {"word": "hours?", "start": 3.8, "end": 4.1},
+                    ],
+                },
             ],
             "transcript_with_tool_calls": [
-                {"role": "agent", "content": "Hello, how can I help?", "words": [{"word": "Hello,", "start": 0.4, "end": 0.7}, {"word": "help?", "start": 1.6, "end": 1.9}]},
-                {"role": "user", "content": "What are your opening hours?", "words": [{"word": "What", "start": 2.5, "end": 2.7}, {"word": "hours?", "start": 3.8, "end": 4.1}]},
-                {"role": "tool_call_invocation", "tool_call_id": "tc_fixture_1", "name": "lookup_hours", "arguments": "{\"location\": \"main\"}"},
-                {"role": "tool_call_result", "tool_call_id": "tc_fixture_1", "content": "{\"hours\": \"9-5\"}"},
-                {"role": "agent", "content": "We are open nine to five.", "words": [{"word": "We", "start": 5.0, "end": 5.1}, {"word": "five.", "start": 6.2, "end": 6.5}]},
+                {
+                    "role": "agent",
+                    "content": "Hello, how can I help?",
+                    "words": [
+                        {"word": "Hello,", "start": 0.4, "end": 0.7},
+                        {"word": "help?", "start": 1.6, "end": 1.9},
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": "What are your opening hours?",
+                    "words": [
+                        {"word": "What", "start": 2.5, "end": 2.7},
+                        {"word": "hours?", "start": 3.8, "end": 4.1},
+                    ],
+                },
+                {
+                    "role": "tool_call_invocation",
+                    "tool_call_id": "tc_fixture_1",
+                    "name": "lookup_hours",
+                    "arguments": '{"location": "main"}',
+                },
+                {
+                    "role": "tool_call_result",
+                    "tool_call_id": "tc_fixture_1",
+                    "content": '{"hours": "9-5"}',
+                },
+                {
+                    "role": "agent",
+                    "content": "We are open nine to five.",
+                    "words": [
+                        {"word": "We", "start": 5.0, "end": 5.1},
+                        {"word": "five.", "start": 6.2, "end": 6.5},
+                    ],
+                },
             ],
-            "public_log_url": "https://logs.example.invalid/fixture/" + call_id + ".txt",
+            "public_log_url": "https://logs.example.invalid/fixture/"
+            + call_id
+            + ".txt",
         }
     )
     if with_recording:
-        body["recording_url"] = "https://recordings.example.invalid/fixture/" + call_id + ".wav"
-        body["recording_multi_channel_url"] = "https://recordings.example.invalid/fixture/" + call_id + "-stereo.wav"
+        body["recording_url"] = (
+            "https://recordings.example.invalid/fixture/" + call_id + ".wav"
+        )
+        body["recording_multi_channel_url"] = (
+            "https://recordings.example.invalid/fixture/" + call_id + "-stereo.wav"
+        )
     if not with_analysis:
         body["call_analysis"] = None
     for key in null_fields:
@@ -113,7 +194,12 @@ def detail(
     return body
 
 
-def list_page(items: list[dict[str, Any]], *, has_more: bool = False, pagination_key: str | None = None) -> dict[str, Any]:
+def list_page(
+    items: list[dict[str, Any]],
+    *,
+    has_more: bool = False,
+    pagination_key: str | None = None,
+) -> dict[str, Any]:
     """A ``/v3/list-calls`` response envelope."""
     page: dict[str, Any] = {"items": items, "has_more": has_more}
     if pagination_key is not None:

@@ -136,10 +136,18 @@ def ingest_event_batch(
 
 
 def ingest_result_receipt(
-    attempt: HostedHarnessAttempt, body: dict[str, Any]
+    attempt: HostedHarnessAttempt,
+    body: dict[str, Any],
+    *,
+    digest_body: dict[str, Any] | None = None,
 ) -> tuple[HostedHarnessReceipt, bool]:
-    supplied_digest = body["digest"]
-    canonical = {key: value for key, value in body.items() if key != "digest"}
+    # The guest signs the JSON object it transmits. Verify that wire object, not
+    # DRF's validated representation: serializers legitimately coerce UUIDs and
+    # datetimes and trim strings, which must not turn a valid signed request into
+    # a digest mismatch.
+    signed_body = digest_body if digest_body is not None else body
+    supplied_digest = signed_body["digest"]
+    canonical = {key: value for key, value in signed_body.items() if key != "digest"}
     if canonical_digest(canonical) != supplied_digest:
         raise HostedHarnessError(
             "digest_mismatch", "result receipt digest did not match", status_code=422
@@ -348,10 +356,17 @@ def ingest_artifact(
 
 
 def ingest_manifest(
-    attempt: HostedHarnessAttempt, body: dict[str, Any]
+    attempt: HostedHarnessAttempt,
+    body: dict[str, Any],
+    *,
+    digest_body: dict[str, Any] | None = None,
 ) -> tuple[HostedHarnessManifest, bool]:
-    supplied_digest = body["digest"]
-    canonical = {key: value for key, value in body.items() if key != "digest"}
+    # As with result receipts, integrity covers the exact parsed wire JSON. The
+    # validated body remains authoritative for binding, persistence, and state
+    # transitions after integrity has been established.
+    signed_body = digest_body if digest_body is not None else body
+    supplied_digest = signed_body["digest"]
+    canonical = {key: value for key, value in signed_body.items() if key != "digest"}
     if canonical_digest(canonical) != supplied_digest:
         raise HostedHarnessError(
             "digest_mismatch", "manifest digest did not match", status_code=422

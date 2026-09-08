@@ -198,7 +198,11 @@ def register_attempt(
         # attempt's terminal state while Daytona is launching (or even running)
         # the replacement guest. Platform-side pre-guest progress (source
         # acquisition) is kept: the gateway records it just before this call.
-        if job.current_stage not in {"queued", "acquiring_source", "understanding_agent"}:
+        if job.current_stage not in {
+            "queued",
+            "acquiring_source",
+            "understanding_agent",
+        }:
             job.current_stage = "queued"
         job.failure = None
         job.terminal_at = None
@@ -485,8 +489,13 @@ def _record_target_agent_facts(
         changed.append("description")
     # model and language are left alone: the contract carries neither.
     connector = str((job.payload.get("agent") or {}).get("connector") or "").lower()
-    if connector in {"livekit", "vapi", "retell"} and not agent_definition.provider:
-        agent_definition.provider = connector
+    if (
+        connector in {"livekit", "vapi", "retell", "retell_chat"}
+        and not agent_definition.provider
+    ):
+        agent_definition.provider = (
+            "retell" if connector == "retell_chat" else connector
+        )
         changed.append("provider")
     authored = _authored_contract_data(job)
     named = str(authored.get("agent") or "").strip()
@@ -534,9 +543,7 @@ def _select_platform_evals(
         ) from unknown
 
 
-def _resolve_scenario_modality(
-    job: HostedHarnessJob, payload: dict[str, Any]
-) -> str:
+def _resolve_scenario_modality(job: HostedHarnessJob, payload: dict[str, Any]) -> str:
     """Resolve text/voice without requiring a lock-step guest rollout."""
     explicit = str(payload.get("modality") or "").lower()
     if explicit in {"text", "voice"}:

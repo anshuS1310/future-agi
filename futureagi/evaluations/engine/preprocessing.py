@@ -419,9 +419,28 @@ def _preprocess_dead_air_detection(inputs):
     rms = librosa.feature.rms(y=y, frame_length=frame_length, hop_length=hop_length)[0]
 
     silent_frames = rms < silence_threshold
-    total_frames = len(rms)
+
+    # Stop measuring after the last thing said. A recording runs on while the call is torn down,
+    # and on one measured call that tail was 34.8s of an 80.0s file: it became a single 30750ms
+    # "gap" and 43.5% of the recording, so the agent was charged for our own hangup delay.
+    #
+    # Only the tail is trimmed. Silence BEFORE the first word is kept, because on an outbound call
+    # that is the agent failing to speak, which is exactly the kind of defect this should catch.
+    # Trimmed with the same threshold rather than introducing a second notion of silence.
+    voiced = [index for index, is_silent in enumerate(silent_frames) if not is_silent]
+    if not voiced:
+        inputs["_dead_air_error"] = "No speech found in the recording"
+        return inputs
+    last_word = voiced[-1]
+    trimmed_after = float(len(silent_frames) - 1 - last_word) * (hop_length / sr)
+    silent_frames = silent_frames[: last_word + 1]
+
+    total_frames = len(silent_frames)
+    conversation_seconds = float(total_frames) * (hop_length / sr)
     dead_air_duration = float(silent_frames.sum()) * (hop_length / sr)
-    dead_air_percentage = (dead_air_duration / duration) * 100.0
+    dead_air_percentage = (
+        (dead_air_duration / conversation_seconds) * 100.0 if conversation_seconds else 0.0
+    )
 
     gaps_ms = []
     in_gap = False
@@ -439,12 +458,15 @@ def _preprocess_dead_air_detection(inputs):
 
     inputs["_dead_air_percentage"] = float(dead_air_percentage)
     inputs["_dead_air_max_gap_ms"] = max_gap_ms
-    inputs["_dead_air_duration_sec"] = duration
+    inputs["_dead_air_duration_sec"] = conversation_seconds
+    inputs["_dead_air_recording_sec"] = duration
     inputs["_dead_air_silence_threshold"] = silence_threshold
 
     logger.info(
         "dead_air_preprocessed",
-        duration_sec=round(duration, 2),
+        recording_sec=round(duration, 2),
+        conversation_sec=round(conversation_seconds, 2),
+        trimmed_after_sec=round(trimmed_after, 2),
         dead_air_pct=round(dead_air_percentage, 2),
         max_gap_ms=round(max_gap_ms, 0),
     )

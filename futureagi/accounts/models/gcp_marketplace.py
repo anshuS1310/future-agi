@@ -26,6 +26,16 @@ class GCPMarketplaceEntitlementState(models.TextChoices):
     SUSPENDED = "ENTITLEMENT_SUSPENDED", "Suspended"
 
 
+# A pending cancellation or plan change runs to the end of the term, so the
+# subscription is still live and its usage still billable.
+IN_SERVICE_STATES = (
+    GCPMarketplaceEntitlementState.ACTIVE,
+    GCPMarketplaceEntitlementState.PENDING_CANCELLATION,
+    GCPMarketplaceEntitlementState.PENDING_PLAN_CHANGE,
+    GCPMarketplaceEntitlementState.PENDING_PLAN_CHANGE_APPROVAL,
+)
+
+
 class GCPUsageReportStatus(models.TextChoices):
     PENDING = "pending", "Pending"
     REPORTED = "reported", "Reported"

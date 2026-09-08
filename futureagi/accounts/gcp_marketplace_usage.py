@@ -22,8 +22,8 @@ from django.db.models import Sum
 from django.utils import timezone
 
 from accounts.models.gcp_marketplace import (
+    IN_SERVICE_STATES,
     GCPMarketplaceEntitlement,
-    GCPMarketplaceEntitlementState,
     GCPMarketplaceUsageCheckpoint,
     GCPUsageReportStatus,
 )
@@ -62,15 +62,6 @@ def _org_label(entitlement) -> str:
     slug = re.sub(r"[^A-Za-z0-9_-]+", "-", name).strip("-")[:64]
     return slug or str(entitlement.organization_id)
 
-
-# A pending cancellation or plan change runs to the end of the term, so usage
-# in that window is still billable.
-IN_SERVICE_STATES = (
-    GCPMarketplaceEntitlementState.ACTIVE,
-    GCPMarketplaceEntitlementState.PENDING_CANCELLATION,
-    GCPMarketplaceEntitlementState.PENDING_PLAN_CHANGE,
-    GCPMarketplaceEntitlementState.PENDING_PLAN_CHANGE_APPROVAL,
-)
 
 # Reserved Marketplace label key. Free-form keys are accepted but ignored: only
 # the reserved ones reach the customer's Cloud Billing cost breakdown. The other
@@ -191,11 +182,14 @@ def _quantity_for(
 
 
 def report_entitlement_usage(
-    entitlement: GCPMarketplaceEntitlement, _skip_check: bool = False
+    entitlement: GCPMarketplaceEntitlement,
+    _skip_check: bool = False,
+    _window_end=None,
 ) -> int:
     """Report one window of usage for one entitlement. Returns metrics sent.
 
-    `_skip_check` is private and belongs to report_final_window alone.
+    `_skip_check` and `_window_end` are private and belong to
+    report_final_window alone.
     """
     if not entitlement.usage_reporting_id:
         logger.warning(
@@ -208,7 +202,9 @@ def report_entitlement_usage(
     if plan is None:
         return 0
 
-    now = _floor_hour(timezone.now())
+    # The final report passes the cancellation moment, since the part-hour
+    # since the last boundary is the whole reason it runs.
+    now = _window_end or _floor_hour(timezone.now())
     period_start = _period_start(now)
 
     # One operation per metric: Google reports errors per operation, so a bad
@@ -252,7 +248,9 @@ def report_final_window(entitlement: GCPMarketplaceEntitlement) -> int:
     and we would drop usage the customer really did incur. Nothing else may
     use this: check is what stops a cancelled consumer being billed at all.
     """
-    return report_entitlement_usage(entitlement, _skip_check=True)
+    return report_entitlement_usage(
+        entitlement, _skip_check=True, _window_end=timezone.now()
+    )
 
 
 def _collect_operations(

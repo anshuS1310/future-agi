@@ -158,15 +158,27 @@ class GCPServiceControlService:
         )
 
         errors = response.get("reportErrors") or []
-        if errors:
+        if not errors:
+            return set()
+
+        logger.error(
+            "gcp_marketplace_report_errors",
+            consumer_id=operations[0].get("consumerId") if operations else None,
+            errors=errors,
+        )
+
+        named = [error for error in errors if error.get("operationId")]
+        if len(named) < len(errors):
+            # An error naming no operation could belong to any of them, so fail
+            # the batch: treating them as accepted drops usage Google rejected.
             logger.error(
-                "gcp_marketplace_report_errors",
+                "gcp_marketplace_report_errors_unattributed",
                 consumer_id=operations[0].get("consumerId") if operations else None,
-                errors=errors,
+                operations=len(operations),
             )
-        return {
-            error.get("operationId") for error in errors if error.get("operationId")
-        }
+            return {op["operationId"] for op in operations}
+
+        return {error["operationId"] for error in named}
 
 
 gcp_service_control = GCPServiceControlService()

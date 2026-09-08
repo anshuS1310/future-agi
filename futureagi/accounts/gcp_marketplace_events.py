@@ -17,6 +17,7 @@ import structlog
 from django.db import transaction
 
 from accounts.models.gcp_marketplace import (
+    IN_SERVICE_STATES,
     GCPMarketplaceAccount,
     GCPMarketplaceEntitlement,
     GCPMarketplaceProcessedEvent,
@@ -265,28 +266,38 @@ def handle_plan_changed(payload: dict) -> None:
     _apply_plan(row)
 
 
+def _report_final_window_after_commit(row: GCPMarketplaceEntitlement) -> None:
+    """Bill the tail after the handler commits, never inside it.
+
+    A report is a charge and cannot be rolled back, so a commit failure after
+    the call would discard the checkpoints and the dedupe row while the charge
+    stood, and the redelivered event would bill the same window again.
+    """
+
+    def _report():
+        from accounts.gcp_marketplace_usage import report_final_window
+
+        try:
+            report_final_window(row)
+        except Exception:
+            # Raising after commit acks nothing and cannot undo the downgrade.
+            logger.exception(
+                "gcp_marketplace_final_usage_report_failed",
+                entitlement_id=row.entitlement_id,
+            )
+
+    transaction.on_commit(_report)
+
+
 def handle_entitlement_cancelled(payload: dict) -> None:
     row = sync_entitlement(_subject_id(payload))
     if row is None:
         return
 
     # Access first: a billing failure must never leave a cancelled customer on
-    # a paid plan. The final report goes last so nothing after it can roll the
-    # transaction back and lose the checkpoints it just wrote.
+    # a paid plan.
     _downgrade_to_free(row)
-
-    from accounts.gcp_marketplace_usage import report_final_window
-
-    try:
-        report_final_window(row)
-    except Exception:
-        # Under an hour of usage, and the entitlement is gone from the hourly
-        # sweep, so there is no retry. Logged rather than raised: redelivering
-        # this event would re-run the downgrade for nothing.
-        logger.exception(
-            "gcp_marketplace_final_usage_report_failed",
-            entitlement_id=row.entitlement_id,
-        )
+    _report_final_window_after_commit(row)
 
 
 def handle_entitlement_renewed(payload: dict) -> None:
@@ -335,6 +346,57 @@ HANDLERS = {
     "ENTITLEMENT_OFFER_ENDED": handle_sync_only,
     "ENTITLEMENT_DELETED": handle_sync_only,
 }
+
+
+def reconcile_entitlement_plans() -> dict:
+    """Re-apply the plan for in-service entitlements whose organization drifted.
+
+    _apply_plan skips an unmapped plan id so the message acks, which leaves the
+    customer on free with nothing to retry: the event is terminal and Google
+    never redelivers it. This is that retry.
+    """
+    if OrganizationSubscription is None:
+        return {"checked": 0, "repaired": 0, "unmapped": 0}
+
+    checked = repaired = unmapped = 0
+
+    entitlements = GCPMarketplaceEntitlement.objects.filter(
+        status__in=IN_SERVICE_STATES, organization__isnull=False
+    ).iterator(chunk_size=200)
+
+    for row in entitlements:
+        checked += 1
+        try:
+            plan, interval = resolve_plan(row.plan_id)
+        except ValueError:
+            unmapped += 1
+            logger.error(
+                "gcp_marketplace_unmapped_plan_unresolved",
+                entitlement_id=row.entitlement_id,
+                plan_id=row.plan_id,
+                organization_id=str(row.organization_id),
+            )
+            continue
+
+        matches = OrganizationSubscription.objects.filter(
+            organization_id=row.organization_id,
+            plan=plan,
+            billing_interval=interval,
+            billing_method=BillingMethodChoices.GCP_MARKETPLACE,
+        ).exists()
+        if matches:
+            continue
+
+        repaired += 1
+        logger.warning(
+            "gcp_marketplace_plan_drift_repaired",
+            entitlement_id=row.entitlement_id,
+            organization_id=str(row.organization_id),
+            plan=plan,
+        )
+        _apply_plan(row)
+
+    return {"checked": checked, "repaired": repaired, "unmapped": unmapped}
 
 
 def process_event(payload: dict) -> bool:

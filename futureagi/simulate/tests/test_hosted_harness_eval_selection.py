@@ -102,6 +102,22 @@ def test_the_catalogue_offers_the_family_and_the_numbered_voice_evals(
 
 
 @pytest.mark.django_db
+def test_an_audio_eval_is_offered_on_voice_and_withheld_from_text(organization, workspace):
+    """`dead_air_detection` asks for the recording itself, not a transcript of it.
+
+    Its required key had no source, so `resolve_eval_mapping` refused it and the catalogue
+    dropped it silently on every run, voice included.
+    """
+    _template("dead_air_detection", ["input_audio"], eval_id=201)
+
+    voice = {item["name"] for item in offered_evals(organization, workspace, "voice")}
+    assert "dead_air_detection" in voice
+
+    text = {item["name"] for item in offered_evals(organization, workspace, "text")}
+    assert "dead_air_detection" not in text
+
+
+@pytest.mark.django_db
 def test_a_chat_run_is_not_offered_the_voice_only_evals(organization, workspace):
     _template("dead_air_detection", ["conversation"], eval_id=201)
     _template("voicemail_handling", ["conversation"], eval_id=207)

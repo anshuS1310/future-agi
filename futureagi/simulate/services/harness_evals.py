@@ -29,8 +29,16 @@ MOST_SELECTED_EVALS = 8
 _OFFERED_NAME_PREFIX = "customer_agent"
 _OFFERED_FROM_EVAL_ID = 200
 
-# Judge a premise a suite need not contain, so they are never offered.
-_NOT_OFFERED = frozenset({"voice_mail_detection", "voicemail_handling"})
+# Never offered. The voicemail pair judge a premise a suite need not contain.
+# `conversation_hallucination` needs a `context` variable, and a call has no retrieval context to
+# bind it to, so it could only ever be pointed at something that is not what it is judging.
+_NOT_OFFERED = frozenset(
+    {
+        "voice_mail_detection",
+        "voicemail_handling",
+        "conversation_hallucination",
+    }
+)
 
 # These have no analogue in a chat transcript.
 _VOICE_ONLY_EVALS = frozenset(
@@ -45,6 +53,8 @@ _VOICE_ONLY_EVALS = frozenset(
 _SOURCE_BY_KEY_VOICE = {
     # The combined recording; a per-channel mapping resolves empty on combined-only providers.
     "conversation": "voice_recording",
+    # Audio-analysing evals ask for the recording itself rather than a transcript of it.
+    "input_audio": "voice_recording",
     # A single-output eval on a call is judging the same conversation.
     "output": "voice_recording",
     "agent_prompt": "agent_prompt",
@@ -111,6 +121,12 @@ def offered_evals(organization, workspace, modality: str) -> list[dict[str, Any]
             continue
         mapping = resolve_eval_mapping(template, modality)
         if mapping is None:
+            logger.warning(
+                "harness_eval_not_offerable",
+                template=name,
+                required_keys=_required_keys(template),
+                modality=modality,
+            )
             continue
         offered.append(
             {

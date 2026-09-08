@@ -620,6 +620,29 @@ def reject_invalid_provider_credentials(values: Mapping[str, str]) -> None:
         )
 
 
+def _reject_unrunnable_target(
+    job: HostedHarnessJob, payload: Mapping[str, Any], source_archive: bytes
+) -> None:
+    """Stop before any sandbox exists when the target can only fail at connect time.
+
+    Runs at the one point both authoring paths share: the source is in hand and no model
+    call has been paid for. Checks, in order, that a source naming a voice provider carries
+    that family, then that every complete family is accepted by its provider.
+    """
+    if payload["source"]["kind"] == "remote":
+        return
+    agent = payload["agent"]
+    if str(agent.get("connector") or "auto").lower() == "auto":
+        detected, _scanned = detect_source_connectors(source_archive)
+        reject_missing_provider_credentials(payload, detected)
+    if agent.get("secret_refs"):
+        values = dict(PlatformSecretResolver().resolve(job))
+        livekit_url = (agent.get("config") or {}).get("livekit_url")
+        if livekit_url and not values.get("LIVEKIT_URL"):
+            values["LIVEKIT_URL"] = str(livekit_url)
+        reject_invalid_provider_credentials(values)
+
+
 class HostedSourceAcquirer:
     _REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
     _REF = re.compile(r"^[A-Za-z0-9._/-]+$")
@@ -1383,19 +1406,7 @@ class DaytonaHostedGateway:
             job.payload = payload
             job.save(update_fields=["payload", "updated_at"])
 
-        # Cheapest point to learn what the agent talks to: the source is in hand and no
-        # sandbox or model call has been paid for yet. A voice source with no matching
-        # credentials, or with credentials its provider rejects, cannot succeed, so stop
-        # here rather than after authoring.
-        if str(payload["agent"].get("connector") or "auto").lower() == "auto":
-            detected, _scanned = detect_source_connectors(source_archive)
-            reject_missing_provider_credentials(payload, detected)
-        if payload["source"]["kind"] != "remote" and payload["agent"].get("secret_refs"):
-            values = dict(PlatformSecretResolver().resolve(job))
-            livekit_url = (payload["agent"].get("config") or {}).get("livekit_url")
-            if livekit_url and not values.get("LIVEKIT_URL"):
-                values["LIVEKIT_URL"] = str(livekit_url)
-            reject_invalid_provider_credentials(values)
+        _reject_unrunnable_target(job, payload, source_archive)
 
         # An imported provider target is part of the agent source of truth. Give the isolated
         # authoring control process only the one provider credential it needs to fetch a
@@ -1694,6 +1705,7 @@ class DaytonaHostedGateway:
             # Resolve cached authoring created before connector resolution shipped as well as
             # newly-authored jobs. This must happen before network policy and job.json are built.
             payload = resolve_authored_connector(payload, authoring_archive)
+        _reject_unrunnable_target(job, payload, source_archive)
         # A chat-driven "add N scenarios" request replays the frozen world but re-runs
         # scenario-gen (extend) against it. The marker persists across infra retries and is
         # cleared only once the extended authoring is stored (store_authoring_archive), so a
@@ -1980,13 +1992,24 @@ class DaytonaHostedGateway:
             if provider_reason:
                 details["provider_reason"] = provider_reason
             attempt.terminal_stage = "failed"
-            attempt.terminal_failure = {
-                "domain": "infrastructure",
-                "stage": "queued",
-                "code": "sandbox_launch_failed",
-                "message": "sandbox failed before the guest entrypoint started",
-                "details": details,
-            }
+            if isinstance(exc, HostedHarnessError):
+                # A platform-side refusal (missing/rejected credentials, bad source) is the
+                # user's environment to fix; keep its typed code instead of blaming the sandbox.
+                attempt.terminal_failure = {
+                    "domain": "environment",
+                    "stage": "acquiring_source",
+                    "code": exc.code,
+                    "message": exc.message,
+                    "details": details,
+                }
+            else:
+                attempt.terminal_failure = {
+                    "domain": "infrastructure",
+                    "stage": "queued",
+                    "code": "sandbox_launch_failed",
+                    "message": "sandbox failed before the guest entrypoint started",
+                    "details": details,
+                }
             attempt.state = HostedHarnessAttempt.State.FAILED
             attempt.save(
                 update_fields=[
@@ -2005,8 +2028,10 @@ class DaytonaHostedGateway:
                 and 400 <= provider_status_code < 500
                 and provider_status_code not in {408, 429}
             )
-            retry_pending = not provider_rejects_retry and self._should_retry(
-                attempt, "infrastructure"
+            retry_pending = (
+                not provider_rejects_retry
+                and (not isinstance(exc, HostedHarnessError) or exc.retryable)
+                and self._should_retry(attempt, "infrastructure")
             )
             if sandbox is None:
                 job = record_cleanup(

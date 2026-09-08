@@ -5,7 +5,7 @@
 export const OPENAPI_CONTRACT = Object.freeze({
   generatedFrom: "api_contracts/openapi/swagger.json",
   swaggerVersion: "2.0",
-  endpointCount: 987,
+  endpointCount: 988,
   endpoints: {
     "/accounts/2fa/recovery-codes/": {
       get: {
@@ -33749,7 +33749,7 @@ export const OPENAPI_CONTRACT = Object.freeze({
         operationId:
           "tracer_observation-span_get_trace_id_by_index_spans_as_base",
         runtimeRequestValidation: true,
-        runtimeResponseValidation: false,
+        runtimeResponseValidation: true,
         requestBody: null,
         queryParameters: {
           page: {
@@ -33789,29 +33789,26 @@ export const OPENAPI_CONTRACT = Object.freeze({
         },
         responses: {
           200: {
-            required: ["count", "results"],
-            type: "object",
-            properties: {
-              count: {
-                type: "integer",
-              },
-              next: {
-                type: "string",
-                format: "uri",
-                "x-nullable": true,
-              },
-              previous: {
-                type: "string",
-                format: "uri",
-                "x-nullable": true,
-              },
-              results: {
-                type: "array",
-                items: {
-                  $ref: "#/definitions/ObservationSpan",
-                },
-              },
-            },
+            $ref: "#/definitions/TraceNavigationResponse",
+          },
+          default: {
+            $ref: "#/definitions/ManagementAPIErrorResponse",
+          },
+        },
+      },
+      post: {
+        operationId:
+          "tracer_observation-span_get_trace_id_by_index_spans_as_base_create",
+        readQueryPost: true,
+        runtimeRequestValidation: true,
+        runtimeResponseValidation: true,
+        requestBody: {
+          $ref: "#/definitions/SpanIndexQuery",
+        },
+        queryParameters: {},
+        responses: {
+          200: {
+            $ref: "#/definitions/TraceNavigationResponse",
           },
           default: {
             $ref: "#/definitions/ManagementAPIErrorResponse",
@@ -33824,7 +33821,7 @@ export const OPENAPI_CONTRACT = Object.freeze({
         operationId:
           "tracer_observation-span_get_trace_id_by_index_spans_as_observe",
         runtimeRequestValidation: true,
-        runtimeResponseValidation: false,
+        runtimeResponseValidation: true,
         requestBody: null,
         queryParameters: {
           page: {
@@ -33870,29 +33867,26 @@ export const OPENAPI_CONTRACT = Object.freeze({
         },
         responses: {
           200: {
-            required: ["count", "results"],
-            type: "object",
-            properties: {
-              count: {
-                type: "integer",
-              },
-              next: {
-                type: "string",
-                format: "uri",
-                "x-nullable": true,
-              },
-              previous: {
-                type: "string",
-                format: "uri",
-                "x-nullable": true,
-              },
-              results: {
-                type: "array",
-                items: {
-                  $ref: "#/definitions/ObservationSpan",
-                },
-              },
-            },
+            $ref: "#/definitions/TraceNavigationResponse",
+          },
+          default: {
+            $ref: "#/definitions/ManagementAPIErrorResponse",
+          },
+        },
+      },
+      post: {
+        operationId:
+          "tracer_observation-span_get_trace_id_by_index_spans_as_observe_create",
+        readQueryPost: true,
+        runtimeRequestValidation: true,
+        runtimeResponseValidation: true,
+        requestBody: {
+          $ref: "#/definitions/SpanObserveIndexQuery",
+        },
+        queryParameters: {},
+        responses: {
+          200: {
+            $ref: "#/definitions/TraceNavigationResponse",
           },
           default: {
             $ref: "#/definitions/ManagementAPIErrorResponse",
@@ -33958,6 +33952,36 @@ export const OPENAPI_CONTRACT = Object.freeze({
             },
           },
         },
+        responses: {
+          200: {
+            $ref: "#/definitions/SpanPrototypeListResponse",
+          },
+          400: {
+            $ref: "#/definitions/ApiErrorResponse",
+          },
+          422: {
+            $ref: "#/definitions/PageDepthExceededError",
+          },
+          500: {
+            $ref: "#/definitions/ApiErrorResponse",
+          },
+          503: {
+            $ref: "#/definitions/ApiErrorResponse",
+          },
+          default: {
+            $ref: "#/definitions/ManagementAPIErrorResponse",
+          },
+        },
+      },
+      post: {
+        operationId: "tracer_observation-span_list_spans_create",
+        readQueryPost: true,
+        runtimeRequestValidation: true,
+        runtimeResponseValidation: true,
+        requestBody: {
+          $ref: "#/definitions/SpanListQuery",
+        },
+        queryParameters: {},
         responses: {
           200: {
             $ref: "#/definitions/SpanPrototypeListResponse",
@@ -34059,6 +34083,36 @@ export const OPENAPI_CONTRACT = Object.freeze({
             },
           },
         },
+        responses: {
+          200: {
+            $ref: "#/definitions/SpanObserveListResponse",
+          },
+          400: {
+            $ref: "#/definitions/ApiErrorResponse",
+          },
+          422: {
+            $ref: "#/definitions/PageDepthExceededError",
+          },
+          500: {
+            $ref: "#/definitions/ApiErrorResponse",
+          },
+          503: {
+            $ref: "#/definitions/ApiErrorResponse",
+          },
+          default: {
+            $ref: "#/definitions/ManagementAPIErrorResponse",
+          },
+        },
+      },
+      post: {
+        operationId: "tracer_observation-span_list_spans_observe_create",
+        readQueryPost: true,
+        runtimeRequestValidation: true,
+        runtimeResponseValidation: true,
+        requestBody: {
+          $ref: "#/definitions/SpanObserveListQuery",
+        },
+        queryParameters: {},
         responses: {
           200: {
             $ref: "#/definitions/SpanObserveListResponse",
@@ -34243,15 +34297,69 @@ export const OPENAPI_CONTRACT = Object.freeze({
     "/tracer/observation-span/{id}/": {
       get: {
         operationId: "tracer_observation-span_read",
-        runtimeRequestValidation: false,
+        runtimeRequestValidation: true,
         runtimeResponseValidation: true,
         requestBody: null,
-        queryParameters: {},
+        queryParameters: {
+          project_id: {
+            required: false,
+            schema: {
+              type: "string",
+              format: "uuid",
+            },
+          },
+          trace_id: {
+            required: false,
+            schema: {
+              type: "string",
+              minLength: 1,
+            },
+          },
+          start_hour: {
+            required: false,
+            schema: {
+              type: "string",
+              format: "date-time",
+            },
+          },
+          observation_type: {
+            required: false,
+            schema: {
+              type: "string",
+            },
+          },
+          service_name: {
+            required: false,
+            schema: {
+              type: "string",
+            },
+          },
+          expected_start_time: {
+            required: false,
+            schema: {
+              type: "string",
+              format: "date-time",
+            },
+          },
+          expected_version: {
+            required: false,
+            schema: {
+              type: "string",
+              minLength: 1,
+            },
+          },
+        },
         responses: {
           200: {
-            $ref: "#/definitions/ObservationSpan",
+            $ref: "#/definitions/ObservationSpanDetailResponse",
           },
           400: {
+            $ref: "#/definitions/ApiErrorResponse",
+          },
+          404: {
+            $ref: "#/definitions/ApiErrorResponse",
+          },
+          409: {
             $ref: "#/definitions/ApiErrorResponse",
           },
           500: {
@@ -36302,6 +36410,36 @@ export const OPENAPI_CONTRACT = Object.freeze({
           },
         },
       },
+      post: {
+        operationId: "tracer_trace-session_list_sessions_create",
+        readQueryPost: true,
+        runtimeRequestValidation: true,
+        runtimeResponseValidation: true,
+        requestBody: {
+          $ref: "#/definitions/TraceSessionListQuery",
+        },
+        queryParameters: {},
+        responses: {
+          200: {
+            $ref: "#/definitions/TraceSessionListResponse",
+          },
+          400: {
+            $ref: "#/definitions/ApiErrorResponse",
+          },
+          422: {
+            $ref: "#/definitions/PageDepthExceededError",
+          },
+          500: {
+            $ref: "#/definitions/ApiErrorResponse",
+          },
+          503: {
+            $ref: "#/definitions/ApiErrorResponse",
+          },
+          default: {
+            $ref: "#/definitions/ManagementAPIErrorResponse",
+          },
+        },
+      },
     },
     "/tracer/trace-session/{id}/": {
       get: {
@@ -36376,6 +36514,93 @@ export const OPENAPI_CONTRACT = Object.freeze({
         responses: {
           200: {
             $ref: "#/definitions/TraceSession",
+          },
+          default: {
+            $ref: "#/definitions/ManagementAPIErrorResponse",
+          },
+        },
+      },
+    },
+    "/tracer/trace-session/{id}/query/": {
+      get: {
+        operationId: "tracer_trace-session_query",
+        runtimeRequestValidation: true,
+        runtimeResponseValidation: true,
+        requestBody: null,
+        queryParameters: {
+          navigation_context: {
+            required: false,
+            schema: {
+              type: "string",
+            },
+          },
+          user_id: {
+            required: false,
+            schema: {
+              type: "string",
+            },
+          },
+          filters: {
+            required: false,
+            schema: {
+              type: "string",
+              minLength: 1,
+              default: "[]",
+            },
+          },
+          sort_params: {
+            required: false,
+            schema: {
+              type: "string",
+              minLength: 1,
+              default: "[]",
+            },
+          },
+          page_number: {
+            required: false,
+            schema: {
+              type: "integer",
+              minimum: 0,
+              default: 0,
+            },
+          },
+          page_size: {
+            required: false,
+            schema: {
+              type: "integer",
+              minimum: 1,
+              maximum: 500,
+              default: 30,
+            },
+          },
+        },
+        responses: {
+          200: {
+            $ref: "#/definitions/TraceSessionDetailResponse",
+          },
+          400: {
+            $ref: "#/definitions/ApiErrorResponse",
+          },
+          default: {
+            $ref: "#/definitions/ManagementAPIErrorResponse",
+          },
+        },
+      },
+      post: {
+        operationId: "tracer_trace-session_query_create",
+        readQueryPost: true,
+        runtimeRequestValidation: true,
+        runtimeResponseValidation: true,
+        requestBody: {
+          $ref: "#/definitions/TraceSessionRetrieveQuery",
+        },
+        queryParameters: {},
+        responses: {
+          200: {
+            $ref: "#/definitions/TraceSessionDetailResponse",
+          },
+          400: {
+            $ref: "#/definitions/ApiErrorResponse",
           },
           default: {
             $ref: "#/definitions/ManagementAPIErrorResponse",
@@ -36494,6 +36719,33 @@ export const OPENAPI_CONTRACT = Object.freeze({
             },
           },
         },
+        responses: {
+          200: {
+            $ref: "#/definitions/TraceAgentGraphResponse",
+          },
+          400: {
+            $ref: "#/definitions/ApiErrorResponse",
+          },
+          500: {
+            $ref: "#/definitions/ApiErrorResponse",
+          },
+          503: {
+            $ref: "#/definitions/ApiErrorResponse",
+          },
+          default: {
+            $ref: "#/definitions/ManagementAPIErrorResponse",
+          },
+        },
+      },
+      post: {
+        operationId: "tracer_trace_agent_graph_create",
+        readQueryPost: true,
+        runtimeRequestValidation: true,
+        runtimeResponseValidation: true,
+        requestBody: {
+          $ref: "#/definitions/TraceAgentGraphQuery",
+        },
+        queryParameters: {},
         responses: {
           200: {
             $ref: "#/definitions/TraceAgentGraphResponse",
@@ -36736,7 +36988,7 @@ export const OPENAPI_CONTRACT = Object.freeze({
       get: {
         operationId: "tracer_trace_get_trace_id_by_index",
         runtimeRequestValidation: true,
-        runtimeResponseValidation: false,
+        runtimeResponseValidation: true,
         requestBody: null,
         queryParameters: {
           page: {
@@ -36776,29 +37028,25 @@ export const OPENAPI_CONTRACT = Object.freeze({
         },
         responses: {
           200: {
-            required: ["count", "results"],
-            type: "object",
-            properties: {
-              count: {
-                type: "integer",
-              },
-              next: {
-                type: "string",
-                format: "uri",
-                "x-nullable": true,
-              },
-              previous: {
-                type: "string",
-                format: "uri",
-                "x-nullable": true,
-              },
-              results: {
-                type: "array",
-                items: {
-                  $ref: "#/definitions/Trace",
-                },
-              },
-            },
+            $ref: "#/definitions/TraceNavigationResponse",
+          },
+          default: {
+            $ref: "#/definitions/ManagementAPIErrorResponse",
+          },
+        },
+      },
+      post: {
+        operationId: "tracer_trace_get_trace_id_by_index_create",
+        readQueryPost: true,
+        runtimeRequestValidation: true,
+        runtimeResponseValidation: true,
+        requestBody: {
+          $ref: "#/definitions/TraceIndexQuery",
+        },
+        queryParameters: {},
+        responses: {
+          200: {
+            $ref: "#/definitions/TraceNavigationResponse",
           },
           default: {
             $ref: "#/definitions/ManagementAPIErrorResponse",
@@ -36810,7 +37058,7 @@ export const OPENAPI_CONTRACT = Object.freeze({
       get: {
         operationId: "tracer_trace_get_trace_id_by_index_observe",
         runtimeRequestValidation: true,
-        runtimeResponseValidation: false,
+        runtimeResponseValidation: true,
         requestBody: null,
         queryParameters: {
           page: {
@@ -36850,29 +37098,25 @@ export const OPENAPI_CONTRACT = Object.freeze({
         },
         responses: {
           200: {
-            required: ["count", "results"],
-            type: "object",
-            properties: {
-              count: {
-                type: "integer",
-              },
-              next: {
-                type: "string",
-                format: "uri",
-                "x-nullable": true,
-              },
-              previous: {
-                type: "string",
-                format: "uri",
-                "x-nullable": true,
-              },
-              results: {
-                type: "array",
-                items: {
-                  $ref: "#/definitions/Trace",
-                },
-              },
-            },
+            $ref: "#/definitions/TraceNavigationResponse",
+          },
+          default: {
+            $ref: "#/definitions/ManagementAPIErrorResponse",
+          },
+        },
+      },
+      post: {
+        operationId: "tracer_trace_get_trace_id_by_index_observe_create",
+        readQueryPost: true,
+        runtimeRequestValidation: true,
+        runtimeResponseValidation: true,
+        requestBody: {
+          $ref: "#/definitions/TraceObserveIndexQuery",
+        },
+        queryParameters: {},
+        responses: {
+          200: {
+            $ref: "#/definitions/TraceNavigationResponse",
           },
           default: {
             $ref: "#/definitions/ManagementAPIErrorResponse",
@@ -36953,6 +37197,36 @@ export const OPENAPI_CONTRACT = Object.freeze({
             },
           },
         },
+        responses: {
+          200: {
+            $ref: "#/definitions/TracePrototypeListResponse",
+          },
+          400: {
+            $ref: "#/definitions/ApiErrorResponse",
+          },
+          422: {
+            $ref: "#/definitions/PageDepthExceededError",
+          },
+          500: {
+            $ref: "#/definitions/ApiErrorResponse",
+          },
+          503: {
+            $ref: "#/definitions/ApiErrorResponse",
+          },
+          default: {
+            $ref: "#/definitions/ManagementAPIErrorResponse",
+          },
+        },
+      },
+      post: {
+        operationId: "tracer_trace_list_traces_create",
+        readQueryPost: true,
+        runtimeRequestValidation: true,
+        runtimeResponseValidation: true,
+        requestBody: {
+          $ref: "#/definitions/TraceListQuery",
+        },
+        queryParameters: {},
         responses: {
           200: {
             $ref: "#/definitions/TracePrototypeListResponse",
@@ -37095,6 +37369,36 @@ export const OPENAPI_CONTRACT = Object.freeze({
           },
         },
       },
+      post: {
+        operationId: "tracer_trace_list_traces_of_session_create",
+        readQueryPost: true,
+        runtimeRequestValidation: true,
+        runtimeResponseValidation: true,
+        requestBody: {
+          $ref: "#/definitions/TraceObserveListQuery",
+        },
+        queryParameters: {},
+        responses: {
+          200: {
+            $ref: "#/definitions/TraceObserveListResponse",
+          },
+          400: {
+            $ref: "#/definitions/ApiErrorResponse",
+          },
+          422: {
+            $ref: "#/definitions/PageDepthExceededError",
+          },
+          500: {
+            $ref: "#/definitions/ApiErrorResponse",
+          },
+          503: {
+            $ref: "#/definitions/ApiErrorResponse",
+          },
+          default: {
+            $ref: "#/definitions/ManagementAPIErrorResponse",
+          },
+        },
+      },
     },
     "/tracer/trace/list_voice_calls/": {
       get: {
@@ -37170,6 +37474,39 @@ export const OPENAPI_CONTRACT = Object.freeze({
             },
           },
         },
+        responses: {
+          200: {
+            $ref: "#/definitions/TraceVoiceCallListResponse",
+          },
+          400: {
+            $ref: "#/definitions/ApiErrorResponse",
+          },
+          404: {
+            $ref: "#/definitions/ApiErrorResponse",
+          },
+          422: {
+            $ref: "#/definitions/PageDepthExceededError",
+          },
+          500: {
+            $ref: "#/definitions/ApiErrorResponse",
+          },
+          503: {
+            $ref: "#/definitions/ApiErrorResponse",
+          },
+          default: {
+            $ref: "#/definitions/ManagementAPIErrorResponse",
+          },
+        },
+      },
+      post: {
+        operationId: "tracer_trace_list_voice_calls_create",
+        readQueryPost: true,
+        runtimeRequestValidation: true,
+        runtimeResponseValidation: true,
+        requestBody: {
+          $ref: "#/definitions/TraceVoiceCallListQuery",
+        },
+        queryParameters: {},
         responses: {
           200: {
             $ref: "#/definitions/TraceVoiceCallListResponse",
@@ -37997,6 +38334,36 @@ export const OPENAPI_CONTRACT = Object.freeze({
             },
           },
         },
+        responses: {
+          200: {
+            $ref: "#/definitions/UsersResponse",
+          },
+          400: {
+            $ref: "#/definitions/ApiErrorResponse",
+          },
+          422: {
+            $ref: "#/definitions/ApiErrorResponse",
+          },
+          500: {
+            $ref: "#/definitions/ApiErrorResponse",
+          },
+          503: {
+            $ref: "#/definitions/ApiErrorResponse",
+          },
+          default: {
+            $ref: "#/definitions/ManagementAPIErrorResponse",
+          },
+        },
+      },
+      post: {
+        operationId: "tracer_users_create",
+        readQueryPost: true,
+        runtimeRequestValidation: true,
+        runtimeResponseValidation: true,
+        requestBody: {
+          $ref: "#/definitions/UsersQuery",
+        },
+        queryParameters: {},
         responses: {
           200: {
             $ref: "#/definitions/UsersResponse",
@@ -62036,6 +62403,19 @@ export const OPENAPI_CONTRACT = Object.freeze({
         },
       },
     },
+    ObservationSpanDetailResponse: {
+      required: ["status", "result"],
+      type: "object",
+      properties: {
+        status: {
+          title: "Status",
+          type: "boolean",
+        },
+        result: {
+          $ref: "#/definitions/ObservationSpanDetailResult",
+        },
+      },
+    },
     ObserveDataset: {
       required: ["name"],
       type: "object",
@@ -70347,6 +70727,177 @@ export const OPENAPI_CONTRACT = Object.freeze({
         },
       },
     },
+    SpanIndexQuery: {
+      required: ["span_id", "project_version_id"],
+      type: "object",
+      properties: {
+        span_id: {
+          title: "Span id",
+          type: "string",
+          minLength: 1,
+        },
+        project_version_id: {
+          title: "Project version id",
+          type: "string",
+          format: "uuid",
+        },
+        filters: {
+          title: "Filters",
+          type: "string",
+          default: "[]",
+          minLength: 1,
+          description: "JSON-encoded canonical filter list.",
+        },
+      },
+    },
+    SpanListQuery: {
+      required: ["project_version_id"],
+      type: "object",
+      properties: {
+        project_version_id: {
+          title: "Project version id",
+          type: "string",
+          format: "uuid",
+        },
+        filters: {
+          title: "Filters",
+          type: "string",
+          default: "[]",
+          minLength: 1,
+          description:
+            "JSON-encoded canonical filter list. On trace, span, session, graph, and eval-task bounded reads, created_at/start_time datetime filters support equals, greater_than, greater_than_or_equal, less_than, less_than_or_equal, between, not_equals, not_between, is_null, and is_not_null. Missing bounds retain the finite default window: 30 days ago for the lower bound and request-time now for the upper bound. Between and not_between use half-open [start, end) ranges; not_equals excludes one DateTime64(6) microsecond. Because the physical created_at/start_time field is non-null, is_null returns an exact empty result without a ClickHouse read and is_not_null preserves the base window. Valid contradictions also return an exact empty result.",
+          "x-boundedDatetimeOperators": [
+            "between",
+            "equals",
+            "greater_than",
+            "greater_than_or_equal",
+            "is_not_null",
+            "is_null",
+            "less_than",
+            "less_than_or_equal",
+            "not_between",
+            "not_equals",
+          ],
+        },
+        page_number: {
+          title: "Page number",
+          description:
+            "Zero-based numbered page. Pages whose required ordered work exceeds the finite read contract return HTTP 422 with code page_depth_exceeded; request an earlier page or narrow the time range.",
+          type: "integer",
+          default: 0,
+          minimum: 0,
+        },
+        page_size: {
+          title: "Page size",
+          type: "integer",
+          default: 30,
+          maximum: 500,
+          minimum: 1,
+        },
+        allow_sampled: {
+          title: "Allow sampled",
+          description:
+            "Omit for backward-compatible complete bounded pages, which may label total_rows as a lower bound. Send false to require an exact total, or true to opt in explicitly to lower-bound totals.",
+          type: "boolean",
+        },
+      },
+    },
+    SpanObserveIndexQuery: {
+      required: ["span_id", "project_id"],
+      type: "object",
+      properties: {
+        span_id: {
+          title: "Span id",
+          type: "string",
+          minLength: 1,
+        },
+        project_id: {
+          title: "Project id",
+          type: "string",
+          format: "uuid",
+        },
+        user_id: {
+          title: "User id",
+          type: "string",
+        },
+        filters: {
+          title: "Filters",
+          type: "string",
+          default: "[]",
+          minLength: 1,
+          description: "JSON-encoded canonical filter list.",
+        },
+      },
+    },
+    SpanObserveListQuery: {
+      type: "object",
+      properties: {
+        project_id: {
+          title: "Project id",
+          type: "string",
+          format: "uuid",
+          "x-nullable": true,
+        },
+        user_id: {
+          title: "User id",
+          type: "string",
+        },
+        filters: {
+          title: "Filters",
+          type: "string",
+          default: "[]",
+          minLength: 1,
+          description:
+            "JSON-encoded canonical filter list. On trace, span, session, graph, and eval-task bounded reads, created_at/start_time datetime filters support equals, greater_than, greater_than_or_equal, less_than, less_than_or_equal, between, not_equals, not_between, is_null, and is_not_null. Missing bounds retain the finite default window: 30 days ago for the lower bound and request-time now for the upper bound. Between and not_between use half-open [start, end) ranges; not_equals excludes one DateTime64(6) microsecond. Because the physical created_at/start_time field is non-null, is_null returns an exact empty result without a ClickHouse read and is_not_null preserves the base window. Valid contradictions also return an exact empty result.",
+          "x-boundedDatetimeOperators": [
+            "between",
+            "equals",
+            "greater_than",
+            "greater_than_or_equal",
+            "is_not_null",
+            "is_null",
+            "less_than",
+            "less_than_or_equal",
+            "not_between",
+            "not_equals",
+          ],
+        },
+        page_number: {
+          title: "Page number",
+          description:
+            "Zero-based numbered page. Pages whose required ordered work exceeds the finite read contract return HTTP 422 with code page_depth_exceeded; request an earlier page or narrow the time range.",
+          type: "integer",
+          default: 0,
+          minimum: 0,
+        },
+        page_size: {
+          title: "Page size",
+          type: "integer",
+          default: 30,
+          maximum: 500,
+          minimum: 1,
+        },
+        cursor: {
+          title: "Cursor",
+          description:
+            "Opaque continuation token returned by the previous page. When supplied, do not also send the numbered-page parameter.",
+          type: "string",
+          maxLength: 4096,
+          minLength: 1,
+        },
+        cursor_mode: {
+          title: "Cursor mode",
+          type: "boolean",
+          default: false,
+        },
+        allow_sampled: {
+          title: "Allow sampled",
+          description:
+            "Omit for backward-compatible complete bounded pages, which may label total_rows as a lower bound. Send false to require an exact total, or true to opt in explicitly to lower-bound totals.",
+          type: "boolean",
+        },
+      },
+    },
     SpanObserveListResponse: {
       required: ["status", "result"],
       type: "object",
@@ -71875,6 +72426,31 @@ export const OPENAPI_CONTRACT = Object.freeze({
         },
       },
     },
+    TraceAgentGraphQuery: {
+      required: ["project_id"],
+      type: "object",
+      properties: {
+        project_id: {
+          title: "Project id",
+          type: "string",
+          format: "uuid",
+        },
+        filters: {
+          title: "Filters",
+          type: "string",
+          default: "[]",
+          minLength: 1,
+          description: "JSON-encoded canonical filter list.",
+        },
+        refresh: {
+          title: "Refresh",
+          description:
+            "Recompute and atomically replace the last exact graph snapshot.",
+          type: "boolean",
+          default: false,
+        },
+      },
+    },
     TraceAgentGraphResponse: {
       required: ["status", "result"],
       type: "object",
@@ -71961,6 +72537,213 @@ export const OPENAPI_CONTRACT = Object.freeze({
         },
       },
     },
+    TraceIndexQuery: {
+      required: ["trace_id", "project_version_id"],
+      type: "object",
+      properties: {
+        trace_id: {
+          title: "Trace id",
+          type: "string",
+          format: "uuid",
+        },
+        project_version_id: {
+          title: "Project version id",
+          type: "string",
+          format: "uuid",
+        },
+        filters: {
+          title: "Filters",
+          type: "string",
+          default: "[]",
+          minLength: 1,
+          description: "JSON-encoded canonical filter list.",
+        },
+      },
+    },
+    TraceListQuery: {
+      required: ["project_version_id"],
+      type: "object",
+      properties: {
+        project_version_id: {
+          title: "Project version id",
+          type: "string",
+          format: "uuid",
+        },
+        trace_ids: {
+          title: "Trace ids",
+          type: "string",
+          default: [],
+        },
+        filters: {
+          title: "Filters",
+          type: "string",
+          default: "[]",
+          minLength: 1,
+          description:
+            "JSON-encoded canonical filter list. On trace, span, session, graph, and eval-task bounded reads, created_at/start_time datetime filters support equals, greater_than, greater_than_or_equal, less_than, less_than_or_equal, between, not_equals, not_between, is_null, and is_not_null. Missing bounds retain the finite default window: 30 days ago for the lower bound and request-time now for the upper bound. Between and not_between use half-open [start, end) ranges; not_equals excludes one DateTime64(6) microsecond. Because the physical created_at/start_time field is non-null, is_null returns an exact empty result without a ClickHouse read and is_not_null preserves the base window. Valid contradictions also return an exact empty result.",
+          "x-boundedDatetimeOperators": [
+            "between",
+            "equals",
+            "greater_than",
+            "greater_than_or_equal",
+            "is_not_null",
+            "is_null",
+            "less_than",
+            "less_than_or_equal",
+            "not_between",
+            "not_equals",
+          ],
+        },
+        sort_params: {
+          title: "Sort params",
+          type: "string",
+          default: "[]",
+          minLength: 1,
+          description: "JSON-encoded list of sort params.",
+        },
+        page_number: {
+          title: "Page number",
+          description:
+            "Zero-based numbered page. Pages whose required ordered work exceeds the finite read contract return HTTP 422 with code page_depth_exceeded; request an earlier page or narrow the time range.",
+          type: "integer",
+          default: 0,
+          minimum: 0,
+        },
+        page_size: {
+          title: "Page size",
+          type: "integer",
+          default: 30,
+          maximum: 500,
+          minimum: 1,
+        },
+        allow_sampled: {
+          title: "Allow sampled",
+          description:
+            "Omit for backward-compatible complete bounded pages, which may label total_rows as a lower bound. Send false to require an exact total, or true to opt in explicitly to lower-bound totals.",
+          type: "boolean",
+        },
+      },
+    },
+    TraceNavigationResponse: {
+      required: ["status", "result"],
+      type: "object",
+      properties: {
+        status: {
+          title: "Status",
+          type: "boolean",
+        },
+        result: {
+          $ref: "#/definitions/TraceNavigationResult",
+        },
+      },
+    },
+    TraceObserveIndexQuery: {
+      required: ["trace_id", "project_id"],
+      type: "object",
+      properties: {
+        trace_id: {
+          title: "Trace id",
+          type: "string",
+          format: "uuid",
+        },
+        project_id: {
+          title: "Project id",
+          type: "string",
+          format: "uuid",
+        },
+        filters: {
+          title: "Filters",
+          type: "string",
+          default: "[]",
+          minLength: 1,
+          description: "JSON-encoded canonical filter list.",
+        },
+      },
+    },
+    TraceObserveListQuery: {
+      type: "object",
+      properties: {
+        project_id: {
+          title: "Project id",
+          type: "string",
+          format: "uuid",
+        },
+        project_version_id: {
+          title: "Project version id",
+          type: "string",
+          format: "uuid",
+        },
+        session_id: {
+          title: "Session id",
+          type: "string",
+          format: "uuid",
+        },
+        filters: {
+          title: "Filters",
+          type: "string",
+          default: "[]",
+          minLength: 1,
+          description:
+            "JSON-encoded canonical filter list. On trace, span, session, graph, and eval-task bounded reads, created_at/start_time datetime filters support equals, greater_than, greater_than_or_equal, less_than, less_than_or_equal, between, not_equals, not_between, is_null, and is_not_null. Missing bounds retain the finite default window: 30 days ago for the lower bound and request-time now for the upper bound. Between and not_between use half-open [start, end) ranges; not_equals excludes one DateTime64(6) microsecond. Because the physical created_at/start_time field is non-null, is_null returns an exact empty result without a ClickHouse read and is_not_null preserves the base window. Valid contradictions also return an exact empty result.",
+          "x-boundedDatetimeOperators": [
+            "between",
+            "equals",
+            "greater_than",
+            "greater_than_or_equal",
+            "is_not_null",
+            "is_null",
+            "less_than",
+            "less_than_or_equal",
+            "not_between",
+            "not_equals",
+          ],
+        },
+        page_number: {
+          title: "Page number",
+          description:
+            "Zero-based numbered page. Pages whose required ordered work exceeds the finite read contract return HTTP 422 with code page_depth_exceeded; request an earlier page or narrow the time range.",
+          type: "integer",
+          default: 0,
+          minimum: 0,
+        },
+        page_size: {
+          title: "Page size",
+          type: "integer",
+          default: 30,
+          maximum: 500,
+          minimum: 1,
+        },
+        cursor: {
+          title: "Cursor",
+          description:
+            "Opaque continuation token returned by the previous page. When supplied, do not also send the numbered-page parameter.",
+          type: "string",
+          maxLength: 4096,
+          minLength: 1,
+        },
+        cursor_mode: {
+          title: "Cursor mode",
+          type: "boolean",
+          default: false,
+        },
+        attribute_keys: {
+          title: "Attribute keys",
+          description:
+            "JSON-encoded list of custom attribute keys to hydrate; only requested keys are returned. Each key resolves to its latest live span value by (start_time, span_id). Comma-separated simple keys remain supported.",
+          type: "string",
+        },
+        allow_sampled: {
+          title: "Allow sampled",
+          description:
+            "Omit for backward-compatible complete bounded pages, which may label total_rows as a lower bound. Send false to require an exact total. Send true to opt in explicitly to lower-bound totals and, on the first page, a clearly labelled bounded partial result when the full ordered prefix cannot be proven inside the read budget.",
+          type: "boolean",
+        },
+        interval: {
+          title: "Interval",
+          type: "string",
+        },
+      },
+    },
     TraceObserveListResponse: {
       required: ["status", "result"],
       type: "object",
@@ -72035,6 +72818,19 @@ export const OPENAPI_CONTRACT = Object.freeze({
           type: "string",
           format: "date-time",
           readOnly: true,
+        },
+      },
+    },
+    TraceSessionDetailResponse: {
+      required: ["status", "result"],
+      type: "object",
+      properties: {
+        status: {
+          title: "Status",
+          type: "boolean",
+        },
+        result: {
+          $ref: "#/definitions/TraceSessionDetailResult",
         },
       },
     },
@@ -72184,6 +72980,90 @@ export const OPENAPI_CONTRACT = Object.freeze({
         },
       },
     },
+    TraceSessionListQuery: {
+      type: "object",
+      properties: {
+        project_id: {
+          title: "Project id",
+          type: "string",
+          format: "uuid",
+        },
+        user_id: {
+          title: "User id",
+          type: "string",
+        },
+        bookmarked: {
+          title: "Bookmarked",
+          type: "boolean",
+          "x-nullable": true,
+        },
+        filters: {
+          title: "Filters",
+          type: "string",
+          default: "[]",
+          minLength: 1,
+          description:
+            "JSON-encoded canonical filter list. On trace, span, session, graph, and eval-task bounded reads, created_at/start_time datetime filters support equals, greater_than, greater_than_or_equal, less_than, less_than_or_equal, between, not_equals, not_between, is_null, and is_not_null. Missing bounds retain the finite default window: 30 days ago for the lower bound and request-time now for the upper bound. Between and not_between use half-open [start, end) ranges; not_equals excludes one DateTime64(6) microsecond. Because the physical created_at/start_time field is non-null, is_null returns an exact empty result without a ClickHouse read and is_not_null preserves the base window. Valid contradictions also return an exact empty result.",
+          "x-boundedDatetimeOperators": [
+            "between",
+            "equals",
+            "greater_than",
+            "greater_than_or_equal",
+            "is_not_null",
+            "is_null",
+            "less_than",
+            "less_than_or_equal",
+            "not_between",
+            "not_equals",
+          ],
+        },
+        sort_params: {
+          title: "Sort params",
+          type: "string",
+          default: "[]",
+          minLength: 1,
+          description: "JSON-encoded list of sort params.",
+        },
+        page_number: {
+          title: "Page number",
+          description:
+            "Zero-based numbered page. Pages whose required ordered work exceeds the finite read contract return HTTP 422 with code page_depth_exceeded; request an earlier page or narrow the time range.",
+          type: "integer",
+          default: 0,
+          minimum: 0,
+        },
+        page_size: {
+          title: "Page size",
+          type: "integer",
+          default: 30,
+          maximum: 500,
+          minimum: 1,
+        },
+        cursor: {
+          title: "Cursor",
+          description:
+            "Opaque continuation token returned by the previous page. When supplied, do not also send the numbered-page parameter.",
+          type: "string",
+          maxLength: 4096,
+          minLength: 1,
+        },
+        cursor_mode: {
+          title: "Cursor mode",
+          type: "boolean",
+          default: false,
+        },
+        interval: {
+          title: "Interval",
+          type: "string",
+        },
+        allow_sampled: {
+          title: "Allow sampled",
+          description:
+            "Omit for backward-compatible complete bounded pages, which may label total_rows as a lower bound. Send false to require an exact total, or true to opt in explicitly to lower-bound totals.",
+          type: "boolean",
+        },
+      },
+    },
     TraceSessionListResponse: {
       required: ["status", "result"],
       type: "object",
@@ -72194,6 +73074,47 @@ export const OPENAPI_CONTRACT = Object.freeze({
         },
         result: {
           $ref: "#/definitions/TraceSessionListResult",
+        },
+      },
+    },
+    TraceSessionRetrieveQuery: {
+      type: "object",
+      properties: {
+        navigation_context: {
+          title: "Navigation context",
+          type: "string",
+          description: "JSON-encoded object.",
+        },
+        user_id: {
+          title: "User id",
+          type: "string",
+        },
+        filters: {
+          title: "Filters",
+          type: "string",
+          default: "[]",
+          minLength: 1,
+          description: "JSON-encoded canonical filter list.",
+        },
+        sort_params: {
+          title: "Sort params",
+          type: "string",
+          default: "[]",
+          minLength: 1,
+          description: "JSON-encoded list of sort params.",
+        },
+        page_number: {
+          title: "Page number",
+          type: "integer",
+          default: 0,
+          minimum: 0,
+        },
+        page_size: {
+          title: "Page size",
+          type: "integer",
+          default: 30,
+          maximum: 500,
+          minimum: 1,
         },
       },
     },
@@ -72245,6 +73166,69 @@ export const OPENAPI_CONTRACT = Object.freeze({
         },
         result: {
           $ref: "#/definitions/TraceVoiceCallDetailResult",
+        },
+      },
+    },
+    TraceVoiceCallListQuery: {
+      required: ["project_id"],
+      type: "object",
+      properties: {
+        project_id: {
+          title: "Project id",
+          type: "string",
+          format: "uuid",
+        },
+        filters: {
+          title: "Filters",
+          type: "string",
+          default: "[]",
+          minLength: 1,
+          description: "JSON-encoded canonical filter list.",
+        },
+        attribute_keys: {
+          title: "Attribute keys",
+          description:
+            "JSON-encoded list of custom attribute keys to include as CSV columns. Comma-separated simple keys remain supported.",
+          type: "string",
+        },
+        page: {
+          title: "Page",
+          description:
+            "One-based numbered page. Pages whose required ordered work exceeds the finite read contract return HTTP 422 with code page_depth_exceeded; request an earlier page, use the additive continuation cursor, or narrow the time range.",
+          type: "integer",
+          default: 1,
+          minimum: 1,
+        },
+        page_size: {
+          title: "Page size",
+          type: "integer",
+          default: 30,
+          maximum: 500,
+          minimum: 1,
+        },
+        remove_simulation_calls: {
+          title: "Remove simulation calls",
+          type: "boolean",
+          default: false,
+        },
+        cursor: {
+          title: "Cursor",
+          description:
+            "Opaque continuation token returned by the previous page. When supplied, do not also send the numbered-page parameter.",
+          type: "string",
+          maxLength: 4096,
+          minLength: 1,
+        },
+        cursor_mode: {
+          title: "Cursor mode",
+          type: "boolean",
+          default: false,
+        },
+        allow_sampled: {
+          title: "Allow sampled",
+          description:
+            "Omit for backward-compatible complete bounded pages, which may label count as a lower bound. Send false to require an exact total. Send true to opt in explicitly to lower-bound totals and, on the first page, a clearly labelled bounded partial result when the full ordered prefix cannot be proven inside the read budget.",
+          type: "boolean",
         },
       },
     },
@@ -74885,6 +75869,77 @@ export const OPENAPI_CONTRACT = Object.freeze({
           title: "Key id",
           type: "string",
           format: "uuid",
+        },
+      },
+    },
+    UsersQuery: {
+      type: "object",
+      properties: {
+        project_id: {
+          title: "Project id",
+          type: "string",
+          format: "uuid",
+        },
+        search: {
+          title: "Search",
+          type: "string",
+        },
+        page_size: {
+          title: "Page size",
+          type: "integer",
+          maximum: 500,
+          minimum: 1,
+        },
+        current_page_index: {
+          title: "Current page index",
+          type: "integer",
+          minimum: 0,
+        },
+        sort_params: {
+          title: "Sort params",
+          type: "string",
+          default: "[]",
+          minLength: 1,
+          description: "JSON-encoded list of sort params.",
+        },
+        filters: {
+          title: "Filters",
+          type: "string",
+          default: "[]",
+          minLength: 1,
+          description: "JSON-encoded canonical filter list.",
+        },
+        export: {
+          title: "Export",
+          type: "boolean",
+          default: false,
+        },
+        cursor: {
+          title: "Cursor",
+          description:
+            "Opaque continuation token returned by the previous page. When supplied, do not also send the numbered-page parameter.",
+          type: "string",
+          maxLength: 4096,
+          minLength: 1,
+        },
+        cursor_mode: {
+          title: "Cursor mode",
+          type: "boolean",
+          default: false,
+        },
+        requested_columns: {
+          title: "Requested columns",
+          description:
+            "JSON-encoded list of visible Users-table fields. Raw-derived metrics are hydrated only when explicitly requested.",
+          type: "string",
+          default: [],
+        },
+        attribute_keys: {
+          title: "Attribute keys",
+          description:
+            "JSON-encoded list of visible custom user attribute keys. Only these keys (plus keys required by filters) are hydrated.",
+          type: "string",
+          default: [],
         },
       },
     },
@@ -85605,6 +86660,43 @@ export const OPENAPI_CONTRACT = Object.freeze({
         },
       },
     },
+    ObservationSpanDetailResult: {
+      required: ["observation_span", "evals_metrics"],
+      type: "object",
+      properties: {
+        observation_span: {
+          title: "Observation span",
+          type: "object",
+          additionalProperties: {
+            type: "object",
+            "x-nullable": true,
+            "x-json-value": true,
+            description: "Any valid JSON value.",
+          },
+        },
+        evals_metrics: {
+          title: "Evals metrics",
+          type: "object",
+          additionalProperties: {
+            type: "object",
+            "x-nullable": true,
+            "x-json-value": true,
+            description: "Any valid JSON value.",
+          },
+          "x-nullable": true,
+        },
+        enrichment: {
+          title: "Enrichment",
+          type: "object",
+          additionalProperties: {
+            type: "object",
+            "x-nullable": true,
+            "x-json-value": true,
+            description: "Any valid JSON value.",
+          },
+        },
+      },
+    },
     ObserveGraphDataErrorResult: {
       required: ["metric_name", "data", "message"],
       type: "object",
@@ -91299,6 +92391,24 @@ export const OPENAPI_CONTRACT = Object.freeze({
         },
       },
     },
+    TraceNavigationResult: {
+      required: ["next_trace_id", "previous_trace_id"],
+      type: "object",
+      properties: {
+        next_trace_id: {
+          title: "Next trace id",
+          type: "string",
+          minLength: 1,
+          "x-nullable": true,
+        },
+        previous_trace_id: {
+          title: "Previous trace id",
+          type: "string",
+          minLength: 1,
+          "x-nullable": true,
+        },
+      },
+    },
     TraceObserveListResult: {
       required: ["metadata", "table", "config"],
       type: "object",
@@ -91350,6 +92460,28 @@ export const OPENAPI_CONTRACT = Object.freeze({
               description: "Any valid JSON value.",
             },
           },
+        },
+      },
+    },
+    TraceSessionDetailResult: {
+      required: ["session_metadata", "response", "next"],
+      type: "object",
+      properties: {
+        session_metadata: {
+          title: "Session metadata",
+          type: "object",
+          additionalProperties: true,
+        },
+        response: {
+          type: "array",
+          items: {
+            type: "object",
+            additionalProperties: true,
+          },
+        },
+        next: {
+          title: "Next",
+          type: "boolean",
         },
       },
     },
@@ -92670,7 +93802,10 @@ export const OPENAPI_CONTRACT = Object.freeze({
         query_provenance: {
           title: "Query provenance",
           type: "string",
-          enum: ["span_user_rollup_end_users_candidate"],
+          enum: [
+            "span_user_rollup_end_users_candidate",
+            "physical_latest_users",
+          ],
         },
         ordering_exact: {
           title: "Ordering exact",

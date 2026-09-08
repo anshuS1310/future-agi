@@ -4,11 +4,12 @@ x-dev-worker: &dev-worker
   pull_policy: never
   volumes:
     - ./futureagi:/app/backend
-    - ${NLTK_DATA_ROOT:-/Users/rishavhada/nltk_data}:/usr/local/share/nltk_data:ro
   environment:
     FAST_STARTUP: "true"
-    # Async evaluations run in workers too, not only in the HTTP backend.
-    BILLING_CONFIG_PATH: /app/backend/ee/billing.yaml
+    NO_STARTUP_DB_MUTATIONS: "true"
+    CH25_DROP_LEGACY_CDC_CHAIN: "false"
+    CH25_TRACE_DUAL_WRITE: "false"
+    CH_DUAL_WRITE: "false"
 
 services:
   frontend:
@@ -33,82 +34,47 @@ services:
       context: .
       dockerfile: Dockerfile
     image: futureagi/future-agi:dev
-    ports:
+    # The DEV API proxy owns the public HTTP port so OTLP/HTTP can be routed
+    # directly to fi-collector without exposing the collector itself.
+    ports: !override
       - "${BACKEND_GRPC_PORT:-50051}:50051"
       - "${FLOWER_PORT:-5555}:5555"
     volumes:
       - ./futureagi:/app/backend
-      - ./.harness-bundles:/app/backend/.harness-bundles:ro
-      # The backend imports the trace scanner while loading URL routes. Keep its
-      # NLTK corpus available for clean recreates, just like the hosted worker.
-      - ${NLTK_DATA_ROOT:-/Users/rishavhada/nltk_data}:/usr/local/share/nltk_data:ro
     environment:
       FAST_STARTUP: "true"
-      ALK_HARNESS_SANDBOX_URL: http://alk-harness-sandbox:8788
-      # The local EE overlay keeps billing.yaml at /app/backend/ee. Without
-      # this, standalone harness evaluations resolve the cloud-only default
-      # path and fail after the model has already produced a valid score.
-      BILLING_CONFIG_PATH: /app/backend/ee/billing.yaml
+      NO_STARTUP_DB_MUTATIONS: "true"
+      CH25_DROP_LEGACY_CDC_CHAIN: "false"
+      CH25_TRACE_DUAL_WRITE: "false"
+      CH_DUAL_WRITE: "false"
 
-  # Local implementation of the hosted ALK sandbox contract. It is reachable by the
-  # backend over the private Compose network; its host port is loopback-only.
-  alk-harness-sandbox:
-    build:
-      context: ${ALK_REPOSITORY_PATH:-../alk-pr58}
-      dockerfile: Dockerfile.sandbox
-    image: futureagi/alk-harness-sandbox:dev
+  # The supervisor runs Django management commands from this checkout. Keep it
+  # on the same locally-built image and bind mount as backend; inheriting the
+  # root compose's release image can leave new commands unavailable on dev.
+  property-catalog-supervisor:
+    image: futureagi/future-agi:dev
     pull_policy: never
-    env_file:
-      - path: ${ALK_HARNESS_ENV_FILE:-../alk-pr58/.env.acceptance}
-        required: false
-    environment:
-      ALK_SANDBOX_HOST: 0.0.0.0
-      ALK_SANDBOX_PORT: 8788
-      ALK_SANDBOX_ROOT: /var/lib/alk-sandbox
-      # The Docker daemon is on the host. Mount the workspace at the same
-      # absolute path inside the runner so Compose bind mounts resolve to a
-      # path both the client and daemon can see. A hosted provider uses the
-      # equivalent shared bundle/workspace mount.
-      ALK_SANDBOX_SOURCE_ROOTS: ${ALK_HOST_WORKSPACE_ROOT:?set ALK_HOST_WORKSPACE_ROOT to the directory containing agent repositories}
-      ALK_SANDBOX_PATH_MAP: ${ALK_HOST_WORKSPACE_ROOT}=${ALK_HOST_WORKSPACE_ROOT}
-      ALK_SANDBOX_UPLOAD_ROOT: ${ALK_HOST_WORKSPACE_ROOT}/.alk-harness-uploads
-      # Job-scoped credential files must be visible at the same absolute path to both the
-      # containerized runner and the host Docker daemon. Contents are mode 0400 and deleted at
-      # the terminal job boundary; they never enter source uploads or harness artifacts.
-      ALK_SANDBOX_SECRET_FILE_ROOT: ${ALK_HOST_WORKSPACE_ROOT}/.alk-harness-secret-files
-      # A local developer laptop runs the full platform and Docker workloads together. Keep
-      # hosted-validation jobs sequential by default so two simultaneous voice/model stacks do
-      # not starve the sandbox status API or Docker daemon. Hosted deployments override this
-      # according to their per-sandbox resource envelope.
-      ALK_SANDBOX_MAX_CONCURRENCY: ${ALK_SANDBOX_MAX_CONCURRENCY:-1}
-      ALK_HARNESS_MODEL: ${ALK_HARNESS_MODEL:-claude-sonnet-4-6}
-      CLOUD_ML_REGION: ${CLOUD_ML_REGION:-global}
-      # The sandbox reports canonical run events/results to the platform. Keep
-      # these separate from model-provider settings loaded above: in hosted
-      # execution they are short-lived job credentials supplied by the control
-      # plane rather than values baked into the runner image.
-      HARNESS_PLATFORM_URL: http://backend:80
-      HARNESS_PLATFORM_API_KEY: ${FI_API_KEY:?FI_API_KEY is required for harness result ingestion}
-      HARNESS_PLATFORM_SECRET_KEY: ${FI_SECRET_KEY:?FI_SECRET_KEY is required for harness result ingestion}
-      # ALK's reusable eval client uses the public SDK variable names. Point both
-      # reporting paths at the same local control/data plane for deployment parity.
-      FI_BASE_URL: http://backend:80
-      FI_API_KEY: ${FI_API_KEY:?FI_API_KEY is required for harness evaluation}
-      FI_SECRET_KEY: ${FI_SECRET_KEY:?FI_SECRET_KEY is required for harness evaluation}
-      GOOGLE_APPLICATION_CREDENTIALS: ${ALK_HOST_WORKSPACE_ROOT}/future-agi/Vertex_AI_Creds.json
-      DOCKER_HOST: tcp://docker-proxy:2375
-      ALK_DOCKER_PUBLISHED_HOST: host.docker.internal
-      ALK_RUNNER_CONTAINER: self
-      HARNESS_WEBHOOK_HOST: 0.0.0.0
     volumes:
-      - ${ALK_HOST_WORKSPACE_ROOT}:${ALK_HOST_WORKSPACE_ROOT}:ro
-      - ${ALK_HOST_WORKSPACE_ROOT}/.alk-harness-uploads:${ALK_HOST_WORKSPACE_ROOT}/.alk-harness-uploads:rw
-      - ${ALK_HOST_WORKSPACE_ROOT}/.alk-harness-secret-files:${ALK_HOST_WORKSPACE_ROOT}/.alk-harness-secret-files:rw
-      - alk_harness_artifacts:/var/lib/alk-sandbox
+      - ./futureagi:/app/backend
+
+  dev-api-proxy:
+    image: nginx:1.27-alpine
     ports:
-      - "127.0.0.1:${ALK_SANDBOX_PORT:-8788}:8788"
+      - "${BACKEND_PORT:-8000}:8000"
+    environment:
+      # Restrict envsubst to these settings so native nginx variables such as
+      # $host and $remote_addr remain intact in the rendered configuration.
+      NGINX_ENVSUBST_FILTER: "^DEV_API_PROXY_"
+      DEV_API_PROXY_OTLP_MAX_BODY_SIZE: "${DEV_API_PROXY_OTLP_MAX_BODY_SIZE:-16m}"
+      DEV_API_PROXY_CONNECT_TIMEOUT: "${DEV_API_PROXY_CONNECT_TIMEOUT:-5s}"
+      DEV_API_PROXY_READ_TIMEOUT: "${DEV_API_PROXY_READ_TIMEOUT:-30s}"
+      DEV_API_PROXY_SEND_TIMEOUT: "${DEV_API_PROXY_SEND_TIMEOUT:-30s}"
+    volumes:
+      - ./deploy/dev-api-proxy/default.conf.template:/etc/nginx/templates/default.conf.template:ro
     depends_on:
-      docker-proxy:
+      backend:
+        condition: service_started
+      fi-collector:
         condition: service_started
     restart: unless-stopped
 
@@ -135,6 +101,9 @@ services:
   worker-tasks-xl:
     <<: *dev-worker
     profiles: !reset []
+  worker-exact-aggregation:
+    <<: *dev-worker
+    profiles: !reset []
   worker-trace-ingestion:
     <<: *dev-worker
     profiles: !reset []
@@ -155,17 +124,9 @@ services:
     working_dir: /app/backend
     volumes:
       - ./futureagi:/app/backend
-      - ./.harness-bundles:/app/backend/.harness-bundles:ro
-      # Local Daytona certification can build the exact merged ALK guest directly. Production
-      # leaves ALK_DAYTONA_DOCKERFILE empty and boots the pinned immutable snapshot instead.
-      - ${ALK_REPOSITORY_PATH:-../alk-pr58}:/opt/alk-source:ro
-      # Keep worker startup deterministic and offline-safe; the base backend imports the trace
-      # scanner, which requires this corpus before the Temporal worker can begin polling.
-      - ${NLTK_DATA_ROOT:-/Users/rishavhada/nltk_data}:/usr/local/share/nltk_data:ro
     environment:
       FAST_STARTUP: "true"
       PYTHONUNBUFFERED: "1"
-      ALK_DAYTONA_DOCKERFILE: ${ALK_DAYTONA_DOCKERFILE:-}
     profiles: !reset []
 
   postgres:
@@ -241,13 +202,3 @@ services:
     volumes:
       - ${DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
     restart: unless-stopped
-
-  # EE cloud config (cloud/agentcc_config/config.yaml) listens on 8090 and the
-  # EE clients (.env AGENTCC_*_URL, gateway_llm_client) call agentcc-gateway:8090,
-  # so remap from the OSS base contract (8090:8080) to 8090 end-to-end.
-  agentcc-gateway:
-    ports: !override
-      - "${AGENTCC_GATEWAY_PORT:-8090}:8090"
-
-volumes:
-  alk_harness_artifacts:

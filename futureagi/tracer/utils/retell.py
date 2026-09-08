@@ -132,9 +132,7 @@ def _extract_timestamps(log: dict) -> tuple:
         else None
     )
     end_time = (
-        datetime.fromtimestamp(raw_end / 1000, tz=UTC)
-        if raw_end is not None
-        else None
+        datetime.fromtimestamp(raw_end / 1000, tz=UTC) if raw_end is not None else None
     )
     return start_time, end_time
 

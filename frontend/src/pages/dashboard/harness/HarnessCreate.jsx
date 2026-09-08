@@ -67,8 +67,7 @@ export const canStartEndToEndRun = ({
   submitting,
   checking,
   uploadingSecretFile,
-}) =>
-  hasSource && !submitting && !checking && !uploadingSecretFile;
+}) => hasSource && !submitting && !checking && !uploadingSecretFile;
 
 function Section({ title, description, children }) {
   return (
@@ -350,7 +349,9 @@ export default function HarnessCreate() {
   // the create payload never carries raw values, only the stored refs.
   const preflightPayload = () => ({
     ...hostedPayload(pendingEnvironmentRefs()),
-    credential_values: environmentValues,
+    ...(Object.keys(environmentValues).length
+      ? { credential_values: environmentValues }
+      : {}),
   });
 
   const inspect = async () => {
@@ -523,6 +524,7 @@ export default function HarnessCreate() {
   // set without hunting for somewhere else to put it.
   const renderCredentialRow = (item, index) => {
     const isSecret = item.kind === "secret";
+    const isFile = item.kind === "file";
     const revealed = revealedSecrets.has(item.environment_name);
     return (
       <Stack
@@ -548,65 +550,108 @@ export default function HarnessCreate() {
             {item.provider} · {item.purpose}
           </Typography>
         </Box>
-        <TextField
-          fullWidth
-          size="small"
-          placeholder={
-            item.status === "missing"
-              ? isSecret
-                ? "Paste secret"
-                : "Enter value"
-              : readable(item.status)
-          }
-          type={isSecret && !revealed ? "password" : "text"}
-          // One logical value per variable. Reading and writing through the
-          // helpers keeps it out of both maps at once, which is what left a
-          // stale entry showing after a paste.
-          value={credentialValue(
-            environmentValues,
-            configurationValues,
-            item.environment_name,
-          )}
-          onChange={(event) => {
-            const next = updateCredential(
+        {isFile ? (
+          <Stack
+            direction={{ xs: "column", sm: "row" }}
+            spacing={1.5}
+            alignItems={{ sm: "center" }}
+            sx={{ flex: 1 }}
+          >
+            <Button
+              component="label"
+              variant="outlined"
+              disabled={uploadingSecretFile}
+              startIcon={
+                uploadingSecretFile ? (
+                  <CircularProgress size={16} />
+                ) : (
+                  <Iconify icon="solar:upload-minimalistic-linear" />
+                )
+              }
+              sx={{ flexShrink: 0 }}
+            >
+              {secretFileRefs[item.environment_name]
+                ? "Replace credential file"
+                : "Upload credential file"}
+              <Box
+                component="input"
+                type="file"
+                accept="application/json,.json"
+                onChange={(event) =>
+                  uploadCredentialFile(
+                    "GOOGLE_APPLICATION_CREDENTIALS",
+                    event.target.files?.[0],
+                  )
+                }
+                sx={{ display: "none" }}
+              />
+            </Button>
+            <Typography variant="caption" color="text.secondary">
+              {secretFileUploads[item.environment_name]?.name ||
+                "Upload the Google ADC JSON used by this agent."}
+            </Typography>
+          </Stack>
+        ) : (
+          <TextField
+            fullWidth
+            size="small"
+            placeholder={
+              item.status === "missing"
+                ? isSecret
+                  ? "Paste secret"
+                  : "Enter value"
+                : readable(item.status)
+            }
+            type={isSecret && !revealed ? "password" : "text"}
+            // One logical value per variable. Reading and writing through the
+            // helpers keeps it out of both maps at once, which is what left a
+            // stale entry showing after a paste.
+            value={credentialValue(
               environmentValues,
               configurationValues,
-              {
-                name: item.environment_name,
-                value: event.target.value,
-                kind: item.kind,
-              },
-            );
-            setEnvironmentValues(next.environmentValues);
-            setConfigurationValues(next.configurationValues);
-            setPreflightDirty(Boolean(preflight));
-          }}
-          InputProps={
-            isSecret
-              ? {
-                  endAdornment: (
-                    <InputAdornment position="end">
-                      <IconButton
-                        size="small"
-                        edge="end"
-                        onClick={() => toggleSecret(item.environment_name)}
-                        aria-label={`${revealed ? "Hide" : "Show"} ${item.environment_name}`}
-                      >
-                        <Iconify
-                          icon={
-                            revealed
-                              ? "solar:eye-closed-linear"
-                              : "solar:eye-linear"
-                          }
-                          width={16}
-                        />
-                      </IconButton>
-                    </InputAdornment>
-                  ),
-                }
-              : undefined
-          }
-        />
+              item.environment_name,
+            )}
+            onChange={(event) => {
+              const next = updateCredential(
+                environmentValues,
+                configurationValues,
+                {
+                  name: item.environment_name,
+                  value: event.target.value,
+                  kind: item.kind,
+                },
+              );
+              setEnvironmentValues(next.environmentValues);
+              setConfigurationValues(next.configurationValues);
+              setPreflightDirty(Boolean(preflight));
+            }}
+            InputProps={
+              isSecret
+                ? {
+                    endAdornment: (
+                      <InputAdornment position="end">
+                        <IconButton
+                          size="small"
+                          edge="end"
+                          onClick={() => toggleSecret(item.environment_name)}
+                          aria-label={`${revealed ? "Hide" : "Show"} ${item.environment_name}`}
+                        >
+                          <Iconify
+                            icon={
+                              revealed
+                                ? "solar:eye-closed-linear"
+                                : "solar:eye-linear"
+                            }
+                            width={16}
+                          />
+                        </IconButton>
+                      </InputAdornment>
+                    ),
+                  }
+                : undefined
+            }
+          />
+        )}
       </Stack>
     );
   };
@@ -1248,7 +1293,9 @@ export default function HarnessCreate() {
                           }}
                         />
                       </Box>
-                      {["connect_only", "provider_import"].includes(providerMode) ? (
+                      {["connect_only", "provider_import"].includes(
+                        providerMode,
+                      ) ? (
                         <TextField
                           size="small"
                           label={
@@ -1269,16 +1316,18 @@ export default function HarnessCreate() {
                         />
                       ) : (
                         <Alert severity="info" variant="outlined">
-                          The repository must include alk.yaml with explicit provision and
-                          destroy commands. ALK supplies world URLs and the provider API key;
-                          your code owns the complete agent definition.
+                          The repository must include alk.yaml with explicit
+                          provision and destroy commands. ALK supplies world
+                          URLs and the provider API key; your code owns the
+                          complete agent definition.
                         </Alert>
                       )}
                       {!providerApiKeyConfigured && (
                         <Alert severity="warning" variant="outlined">
-                          Add {providerApiKeyName} in Environment values and click
-                          Use values before starting. ALK stores it as a run-scoped
-                          secret and never writes it into the job or bundle.
+                          Add {providerApiKeyName} in Environment values and
+                          click Use values before starting. ALK stores it as a
+                          run-scoped secret and never writes it into the job or
+                          bundle.
                         </Alert>
                       )}
                     </>

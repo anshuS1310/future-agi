@@ -106,14 +106,12 @@ def _validate_secret_refs_daytona(secret_refs: dict) -> None:
             )
 
 
-def _validate_known_daytona_egress(
-    payload: dict[str, Any], callback_url: str
-) -> None:
+def _validate_known_daytona_egress(payload: dict[str, Any], callback_url: str) -> None:
     """Reject known Daytona egress overflow before persisting or enqueueing a
     job."""
     from simulate.services.hosted_harness_gateway import (
-        _known_simulator_egress_inputs,
         _hostname_from_url,
+        _known_simulator_egress_inputs,
         _resolved_egress_domains,
         _validate_egress_domains,
         _validate_resolved_egress_domains,
@@ -237,9 +235,7 @@ def serialize_job(job: HostedHarnessJob) -> dict[str, Any]:
             "total_scenarios": job.scenario_count,
             "deadline_at": job.deadline_at.isoformat(),
             "cancel_requested_at": (
-                job.cancel_requested_at.isoformat()
-                if job.cancel_requested_at
-                else None
+                job.cancel_requested_at.isoformat() if job.cancel_requested_at else None
             ),
             "failure": job.failure,
         },
@@ -269,7 +265,12 @@ def _scenario_status(reg: HostedHarnessScenario) -> str | None:
     return receipt or "running"
 
 
-def _connector_credential_readiness(payload, detected_connectors=(), scanned_files=0):
+def _connector_credential_readiness(
+    payload,
+    detected_connectors=(),
+    scanned_files=0,
+    required_credential_files=(),
+):
     """Readiness report the create form renders: which target aliases are still missing.
 
     Same rule as the authoring gate (``missing_provider_credentials``), expressed as
@@ -291,14 +292,14 @@ def _connector_credential_readiness(payload, detected_connectors=(), scanned_fil
     detected = [name for name in detected_connectors if name in CONNECTOR_ALIASES]
     missing = [] if remote else missing_provider_credentials(agent, detected)
     present = present_provider_aliases(agent)
+    required_files = set() if remote else set(required_credential_files)
+    missing.extend(sorted(required_files - present))
     if connector == "auto":
         families = dict(CONNECTOR_ALIASES)
         # A complete family of any kind satisfies the run (see missing_provider_credentials),
         # so nothing else is required once one is present.
         required = (
-            set()
-            if remote or complete_provider_families(agent)
-            else set(detected)
+            set() if remote or complete_provider_families(agent) else set(detected)
         )
     else:
         families = {connector: CONNECTOR_ALIASES[connector]}
@@ -319,6 +320,18 @@ def _connector_credential_readiness(payload, detected_connectors=(), scanned_fil
         for name, aliases in families.items()
         for alias in aliases
     ]
+    requirements.extend(
+        {
+            "id": f"credential-file:{alias}",
+            "environment_name": alias,
+            "provider": "Google Vertex AI",
+            "purpose": "Agent service-account credential file",
+            "kind": "file",
+            "required": True,
+            "status": "configured" if alias in present else "missing",
+        }
+        for alias in sorted(required_files)
+    )
     choices = []
     if connector == "auto" and len(required) > 1:
         choices.append(
@@ -326,7 +339,11 @@ def _connector_credential_readiness(payload, detected_connectors=(), scanned_fil
                 "id": "target_provider",
                 "purpose": "Target provider credentials",
                 "satisfied": not missing,
-                "options": [list(CONNECTOR_ALIASES[name]) for name in required],
+                "options": [
+                    list(aliases)
+                    for name, aliases in CONNECTOR_ALIASES.items()
+                    if name in required
+                ],
             }
         )
     return {
@@ -345,14 +362,38 @@ def _preflight_source_connectors(request, payload):
     credential family the agent actually uses instead of every family."""
     from simulate.services.hosted_harness_gateway import (
         HostedSourceAcquirer,
-        detect_source_connectors,
+        detect_source_credentials,
     )
 
-    if payload["agent"]["connector"] != "auto" or payload["source"]["kind"] == "remote":
-        return [], 0
+    if payload["source"]["kind"] == "remote":
+        return [], [], 0
     probe = HostedHarnessJob(organization=_organization(request), payload=payload)
     archive, _commit = HostedSourceAcquirer().acquire(probe)
-    return detect_source_connectors(archive)
+    detected, required_files, scanned = detect_source_credentials(archive)
+    if payload["agent"]["connector"] != "auto":
+        detected = []
+    return detected, required_files, scanned
+
+
+def _validate_required_credential_files(request, payload) -> None:
+    """Refuse a launch whose source explicitly requires an absent credential file."""
+    from simulate.services.hosted_harness import HostedHarnessError
+
+    analysis = _preflight_source_connectors(request, payload)
+    required_files = analysis[1] if len(analysis) == 3 else []
+    present = {
+        str(alias).upper() for alias in (payload["agent"].get("secret_refs") or {})
+    }
+    missing = sorted(set(required_files) - present)
+    if missing:
+        raise HostedHarnessError(
+            "credential_file_required",
+            (
+                "agent source requires a Google Vertex credential file; upload "
+                "GOOGLE_APPLICATION_CREDENTIALS JSON before starting the run"
+            ),
+            status_code=422,
+        )
 
 
 def _preflight_credential_probe(payload) -> list[dict[str, Any]]:
@@ -374,7 +415,6 @@ def _preflight_credential_probe(payload) -> list[dict[str, Any]]:
     if livekit_url and not values.get("LIVEKIT_URL"):
         values["LIVEKIT_URL"] = str(livekit_url)
     return [result.as_dict() for result in probe_all(values)]
-
 
 
 class DaytonaHarnessProvider:
@@ -411,6 +451,7 @@ class DaytonaHarnessProvider:
         try:
             _validate_secret_refs_daytona(payload["agent"]["secret_refs"])
             _validate_known_daytona_egress(payload, base_url)
+            _validate_required_credential_files(request, payload)
         except HostedHarnessError as exc:
             return Response(exc.as_dict(), status=exc.status_code)
         try:
@@ -451,6 +492,7 @@ class DaytonaHarnessProvider:
             HOSTED_ENGINE_CATALOG,
             HOSTED_RUNTIME_CATALOG,
         )
+
         payload = request.validated_data
         base_url = (
             getattr(settings, "HARNESS_PUBLIC_BASE_URL", "")
@@ -463,10 +505,19 @@ class DaytonaHarnessProvider:
             return Response(exc.as_dict(), status=exc.status_code)
         runtime = payload["runtime"]
         try:
-            detected, scanned = _preflight_source_connectors(request, payload)
+            source_analysis = _preflight_source_connectors(request, payload)
         except HostedHarnessError as exc:
             return Response(exc.as_dict(), status=exc.status_code)
-        credentials = _connector_credential_readiness(payload, detected, scanned)
+        # Keep two-item patched return values compatible with tests and custom
+        # providers written before credential-file discovery was added.
+        if len(source_analysis) == 2:
+            detected, scanned = source_analysis
+            required_files = []
+        else:
+            detected, required_files, scanned = source_analysis
+        credentials = _connector_credential_readiness(
+            payload, detected, scanned, required_files
+        )
         probe = _preflight_credential_probe(payload)
         credentials["report"]["probe"] = probe
         # Every submitted key must be accepted: a wrong model key beside a valid transport
@@ -554,9 +605,9 @@ class DaytonaHarnessProvider:
         from simulate.services.hosted_harness import HostedHarnessError
         from simulate.temporal.client import start_hosted_harness_gateway_workflow
 
-        base_url = str(
-            getattr(settings, "HARNESS_PUBLIC_BASE_URL", "") or ""
-        ).rstrip("/")
+        base_url = str(getattr(settings, "HARNESS_PUBLIC_BASE_URL", "") or "").rstrip(
+            "/"
+        )
         if not base_url:
             raise HostedHarnessError(
                 "public_base_url_missing",
@@ -576,7 +627,9 @@ class DaytonaHarnessProvider:
             )
             if job is None:
                 raise HostedHarnessError(
-                    "job_not_found", "saved hosted harness job was not found", status_code=404
+                    "job_not_found",
+                    "saved hosted harness job was not found",
+                    status_code=404,
                 )
             if job.state not in terminal_states:
                 raise HostedHarnessError(

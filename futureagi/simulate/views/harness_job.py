@@ -160,6 +160,16 @@ class HarnessJobViewSet(viewsets.ViewSet):
                     {"detail": "Google credential JSON must contain an object"},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
+            required_fields = {"type", "project_id", "client_email", "private_key"}
+            missing_fields = sorted(
+                field for field in required_fields if not document.get(field)
+            )
+            if document.get("type") != "service_account" or missing_fields:
+                detail = (
+                    "Google credential file must be service-account JSON containing "
+                    "type, project_id, client_email, and private_key"
+                )
+                return Response({"detail": detail}, status=status.HTTP_400_BAD_REQUEST)
 
             from simulate.models import HostedHarnessSecret
 

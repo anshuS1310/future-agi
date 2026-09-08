@@ -16,15 +16,30 @@ from simulate.services.harness_provider import (
     DaytonaHarnessProvider,
     SandboxHarnessProvider,
     _validate_known_daytona_egress,
+    _validate_required_credential_files,
     get_harness_provider,
 )
 from simulate.services.hosted_harness import HostedHarnessError, create_hosted_job
 
-
 _LIVEKIT_REFS = {
-    "LIVEKIT_URL": {"key": "harness-livekit_url", "manager": "platform-vault", "purpose": "target_provider", "version": "1"},
-    "LIVEKIT_API_KEY": {"key": "harness-livekit_api_key", "manager": "platform-vault", "purpose": "target_provider", "version": "1"},
-    "LIVEKIT_API_SECRET": {"key": "harness-livekit_api_secret", "manager": "platform-vault", "purpose": "target_provider", "version": "1"},
+    "LIVEKIT_URL": {
+        "key": "harness-livekit_url",
+        "manager": "platform-vault",
+        "purpose": "target_provider",
+        "version": "1",
+    },
+    "LIVEKIT_API_KEY": {
+        "key": "harness-livekit_api_key",
+        "manager": "platform-vault",
+        "purpose": "target_provider",
+        "version": "1",
+    },
+    "LIVEKIT_API_SECRET": {
+        "key": "harness-livekit_api_secret",
+        "manager": "platform-vault",
+        "purpose": "target_provider",
+        "version": "1",
+    },
 }
 
 
@@ -146,9 +161,7 @@ def test_known_daytona_egress_rejects_overflow_without_vault_resolution(settings
     settings.ALK_HOSTED_SIMULATOR_SECRET_ENV = {}
 
     with pytest.raises(HostedHarnessError, match="Daytona supports at most 20"):
-        _validate_known_daytona_egress(
-            _v1_payload(), "https://harness.example.test/"
-        )
+        _validate_known_daytona_egress(_v1_payload(), "https://harness.example.test/")
 
 
 def test_daytona_preflight_rejects_known_egress_overflow(settings):
@@ -246,6 +259,74 @@ def test_daytona_preflight_leaves_credentials_optional_when_source_is_unclassifi
         ["LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET"],
         ["RETELL_API_KEY"],
     ]
+
+
+def test_daytona_preflight_requires_detected_vertex_credential_file(settings):
+    settings.ALK_HOSTED_BASE_EGRESS_DOMAINS = []
+    settings.ALK_HOSTED_SIMULATOR_SECRET_ENV = {}
+    payload = _v1_payload()
+    payload["agent"] = {"connector": "auto", "config": {}, "secret_refs": {}}
+    request = SimpleNamespace(
+        validated_data=payload,
+        build_absolute_uri=lambda _path: "https://harness.example.test/",
+    )
+
+    with patch(
+        "simulate.services.harness_provider._preflight_source_connectors",
+        return_value=([], ["GOOGLE_APPLICATION_CREDENTIALS_JSON"], 7),
+    ):
+        response = DaytonaHarnessProvider().preflight(request)
+
+    assert response.status_code == 200
+    assert response.data["ready_to_submit"] is False
+    requirement = next(
+        item
+        for item in response.data["credentials"]["requirements"]
+        if item["environment_name"] == "GOOGLE_APPLICATION_CREDENTIALS_JSON"
+    )
+    assert requirement == {
+        "id": "credential-file:GOOGLE_APPLICATION_CREDENTIALS_JSON",
+        "environment_name": "GOOGLE_APPLICATION_CREDENTIALS_JSON",
+        "provider": "Google Vertex AI",
+        "purpose": "Agent service-account credential file",
+        "kind": "file",
+        "required": True,
+        "status": "missing",
+    }
+
+    payload["agent"]["secret_refs"] = {
+        "GOOGLE_APPLICATION_CREDENTIALS_JSON": {
+            "manager": "platform-vault",
+            "key": "uploaded-google-adc",
+            "version": "1",
+            "purpose": "target_provider",
+        }
+    }
+    with patch(
+        "simulate.services.harness_provider._preflight_source_connectors",
+        return_value=([], ["GOOGLE_APPLICATION_CREDENTIALS_JSON"], 7),
+    ):
+        ready = DaytonaHarnessProvider().preflight(request)
+
+    assert ready.data["ready_to_submit"] is True
+
+
+def test_daytona_launch_guard_rejects_missing_detected_vertex_file():
+    payload = _v1_payload()
+    payload["agent"] = {"connector": "auto", "config": {}, "secret_refs": {}}
+
+    with (
+        patch(
+            "simulate.services.harness_provider._preflight_source_connectors",
+            return_value=([], ["GOOGLE_APPLICATION_CREDENTIALS_JSON"], 7),
+        ),
+        pytest.raises(HostedHarnessError) as exc_info,
+    ):
+        _validate_required_credential_files(SimpleNamespace(), payload)
+
+    assert exc_info.value.code == "credential_file_required"
+    assert exc_info.value.status_code == 422
+    assert "upload GOOGLE_APPLICATION_CREDENTIALS JSON" in str(exc_info.value)
 
 
 def test_auto_source_submission_does_not_require_unrelated_voice_credentials():
@@ -454,6 +535,7 @@ def test_daytona_create_starts_gateway_workflow(user, workspace):
         patch(
             "simulate.services.harness_provider.serialize_job", return_value=serialized
         ),
+        patch("simulate.services.harness_provider._validate_required_credential_files"),
     ):
         response = client.post(
             "/simulate/api/harness-jobs/",
@@ -571,7 +653,11 @@ def test_secret_file_upload_returns_only_opaque_reference(user):
     # credential file from the JSON alias; no host-local path crosses the seam.
     client = APIClient()
     client.force_authenticate(user=user)
-    raw = b'{"type":"service_account","private_key":"must-not-be-echoed"}'
+    raw = (
+        b'{"type":"service_account","project_id":"test-project",'
+        b'"client_email":"svc@test-project.iam.gserviceaccount.com",'
+        b'"private_key":"must-not-be-echoed"}'
+    )
     response = client.post(
         "/simulate/api/harness-jobs/secret-files/",
         {
@@ -597,6 +683,35 @@ def test_secret_file_upload_returns_only_opaque_reference(user):
     record = HostedHarnessSecret.objects.get(name=result["secret_ref"]["key"])
     assert raw.decode() not in record.encrypted_value
     assert json.loads(record.get_value()) == json.loads(raw)
+
+
+@pytest.mark.django_db
+def test_secret_file_upload_rejects_incomplete_google_service_account(user):
+    client = APIClient()
+    client.force_authenticate(user=user)
+
+    response = client.post(
+        "/simulate/api/harness-jobs/secret-files/",
+        {
+            "file": SimpleUploadedFile(
+                "customer-google.json",
+                b'{"type":"service_account","private_key":"incomplete"}',
+                content_type="application/json",
+            ),
+            "environment_name": "GOOGLE_APPLICATION_CREDENTIALS",
+        },
+        format="multipart",
+    )
+
+    assert response.status_code == 400
+    assert "project_id, client_email, and private_key" in response.json()["detail"]
+
+    from simulate.models import HostedHarnessSecret
+
+    assert not HostedHarnessSecret.objects.filter(
+        organization=user.organization,
+        name__startswith="harness-google-adc-",
+    ).exists()
 
 
 @pytest.mark.django_db

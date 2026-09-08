@@ -31,6 +31,7 @@ from simulate.services.hosted_harness_gateway import (
     _validate_resolved_egress_domains,
     attach_platform_simulator_secret_refs,
     detect_source_connectors,
+    detect_source_credentials,
     pack_authoring_archive,
     prepare_dispatch_payload,
     resolve_authored_connector,
@@ -609,6 +610,43 @@ def test_source_scan_reads_manifests_and_code_but_not_prose():
     assert detected == ["livekit"]
     assert scanned == 2
     assert detect_source_connectors(b"not a tarball") == ([], 0)
+
+
+def test_source_scan_detects_explicit_vertex_adc_requirement():
+    connectors, required_files, scanned = detect_source_credentials(
+        _source_tarball(
+            {
+                "agent.py": (
+                    "import os\n"
+                    "credentials = os.environ['GOOGLE_APPLICATION_CREDENTIALS']\n"
+                ),
+                "requirements.txt": "google-cloud-aiplatform==1.71.1\n",
+            }
+        )
+    )
+
+    assert connectors == []
+    assert required_files == ["GOOGLE_APPLICATION_CREDENTIALS_JSON"]
+    assert scanned == 2
+
+
+def test_source_scan_does_not_require_adc_for_google_sdk_or_api_key_mode():
+    connectors, required_files, scanned = detect_source_credentials(
+        _source_tarball(
+            {
+                "agent.py": (
+                    "from google import genai\n"
+                    "client = genai.Client(api_key=os.environ['GOOGLE_API_KEY'])\n"
+                ),
+                "README.md": "Set GOOGLE_APPLICATION_CREDENTIALS for Vertex mode.\n",
+            }
+        )
+    )
+
+    assert connectors == []
+    assert required_files == []
+    assert scanned == 1
+    assert detect_source_credentials(b"not a tarball") == ([], [], 0)
 
 
 def test_dispatch_payload_mirrors_only_livekit_url():

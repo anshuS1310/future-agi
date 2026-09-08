@@ -384,6 +384,7 @@ class GitHubAppTokenProvider:
         finally:
             self.revoke(token)
 
+
 # Dependency manifests and code are where a voice framework shows up; prose (README, docs)
 # is skipped so an English "retell" cannot masquerade as the Retell SDK.
 _SOURCE_SCAN_SUFFIXES = (
@@ -414,15 +415,29 @@ _CONNECTOR_SIGNATURES = {
     "retell": re.compile(r"retell", re.IGNORECASE),
 }
 
+# Strong signals that the submitted agent expects Google Application Default
+# Credentials inside its own process.  Merely importing a Google SDK is not
+# enough: many agents support both API-key and Vertex modes.  These signatures
+# intentionally match an explicit ADC path/read or an explicit Vertex switch.
+_VERTEX_ADC_SIGNATURES = (
+    re.compile(r"GOOGLE_APPLICATION_CREDENTIALS", re.IGNORECASE),
+    re.compile(
+        r"GOOGLE_GENAI_USE_VERTEXAI\s*[=:]\s*['\"]?(?:1|true|yes)", re.IGNORECASE
+    ),
+    re.compile(r"google\.auth\.default\s*\(", re.IGNORECASE),
+    re.compile(r"from_service_account_file\s*\(", re.IGNORECASE),
+    re.compile(
+        r"genai\.Client\s*\([^)]*vertexai\s*=\s*True", re.IGNORECASE | re.DOTALL
+    ),
+)
 
-def detect_source_connectors(archive: bytes) -> tuple[list[str], int]:
-    """Voice providers the submitted source talks to, and how many files were read.
+TARGET_GOOGLE_ADC_ALIAS = "GOOGLE_APPLICATION_CREDENTIALS_JSON"
 
-    A dependency/code grep is a heuristic, not a verdict: it exists so the platform can ask
-    for the right credential family before authoring rather than after, and so preflight can
-    show one family instead of every one. Explicit connectors bypass it entirely.
-    """
+
+def detect_source_credentials(archive: bytes) -> tuple[list[str], list[str], int]:
+    """Return voice connectors, required credential-file aliases, and files read."""
     found: set[str] = set()
+    required_files: set[str] = set()
     scanned = 0
     try:
         with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as tar:
@@ -445,17 +460,30 @@ def detect_source_connectors(archive: bytes) -> tuple[list[str], int]:
                 for connector, signature in _CONNECTOR_SIGNATURES.items():
                     if connector not in found and signature.search(text):
                         found.add(connector)
-                if scanned >= _SOURCE_SCAN_MAX_FILES or len(found) == len(
-                    _CONNECTOR_SIGNATURES
-                ):
+                if any(signature.search(text) for signature in _VERTEX_ADC_SIGNATURES):
+                    required_files.add(TARGET_GOOGLE_ADC_ALIAS)
+                if scanned >= _SOURCE_SCAN_MAX_FILES:
                     break
     except (tarfile.TarError, OSError, EOFError):
-        return [], scanned
-    return sorted(found), scanned
+        return [], [], scanned
+    return sorted(found), sorted(required_files), scanned
+
+
+def detect_source_connectors(archive: bytes) -> tuple[list[str], int]:
+    """Voice providers the submitted source talks to, and how many files were read.
+
+    A dependency/code grep is a heuristic, not a verdict: it exists so the platform can ask
+    for the right credential family before authoring rather than after, and so preflight can
+    show one family instead of every one. Explicit connectors bypass it entirely.
+    """
+    connectors, _required_files, scanned = detect_source_credentials(archive)
+    return connectors, scanned
 
 
 _GUEST_CAUSE_LINE = re.compile(r"(?:ProcessRuntimeError|RuntimeValidationError): (.+)$")
-_GUEST_INNER_EXCEPTION = re.compile(r"(?:^|\\n)([A-Za-z_.]+(?:Error|Exception)): ([^\\\"\n]+)")
+_GUEST_INNER_EXCEPTION = re.compile(
+    r"(?:^|\\n)([A-Za-z_.]+(?:Error|Exception)): ([^\\\"\n]+)"
+)
 
 
 def guest_failure_cause(tail: str) -> str:
@@ -476,7 +504,9 @@ def guest_failure_cause(tail: str) -> str:
         name, detail = inner[-1]
         detail = detail.strip()
         if detail and detail not in cause:
-            cause = f"{cause}; agent: {name}: {detail}" if cause else f"{name}: {detail}"
+            cause = (
+                f"{cause}; agent: {name}: {detail}" if cause else f"{name}: {detail}"
+            )
     return cause[:400]
 
 
@@ -1242,7 +1272,6 @@ class DaytonaHostedGateway:
         if payload != job.payload:
             job.payload = payload
             job.save(update_fields=["payload", "updated_at"])
-
 
         # An imported provider target is part of the agent source of truth. Give the isolated
         # authoring control process only the one provider credential it needs to fetch a

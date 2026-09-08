@@ -300,3 +300,82 @@ async def test_recording_rehost_blocks_ssrf_url_and_fails_open():
     assert s3_url == blocked
     assert size == 0
     mock_dl.assert_not_called()
+
+
+def test_our_own_storage_object_is_read_through_the_client_not_fetched(monkeypatch):
+    """The guard is for arbitrary URLs. Our own bucket is addressed by key, so a private storage
+    endpoint stops being a reason our recordings cannot be read."""
+    from tfc.utils import storage
+
+    calls = {}
+
+    def fake_own(url):
+        calls["own"] = url
+        return ("fi-content-dev", "alk-harness/one.mp3")
+
+    def fake_read(bucket_name, object_key):
+        calls["read"] = (bucket_name, object_key)
+        return b"audio-bytes"
+
+    def fail_fetch(*args, **kwargs):
+        raise AssertionError("our own object must not go through the guarded fetch")
+
+    monkeypatch.setattr(storage, "own_storage_object", fake_own)
+    monkeypatch.setattr(storage, "read_object_bytes", fake_read)
+    monkeypatch.setattr(storage, "safe_fetch", fail_fetch)
+
+    response = storage._ssrf_safe_get("http://minio:9000/fi-content-dev/alk-harness/one.mp3")
+
+    assert response.status_code == 200
+    assert response.content == b"audio-bytes"
+    assert calls["read"] == ("fi-content-dev", "alk-harness/one.mp3")
+
+
+def test_an_external_url_still_goes_through_the_guard(monkeypatch):
+    from tfc.utils import storage
+
+    seen = {}
+
+    def fake_fetch(url, **kwargs):
+        seen["url"] = url
+        return "fetched"
+
+    monkeypatch.setattr(storage, "own_storage_object", lambda url: None)
+    monkeypatch.setattr(storage, "safe_fetch", fake_fetch)
+
+    assert storage._ssrf_safe_get("https://api.vapi.ai/recording/abc.mp3") == "fetched"
+    assert seen["url"] == "https://api.vapi.ai/recording/abc.mp3"
+
+
+def test_a_missing_object_is_transient_so_the_retry_loop_can_retry(monkeypatch):
+    from requests.exceptions import RequestException
+
+    from tfc.utils import storage
+
+    monkeypatch.setattr(storage, "own_storage_object", lambda url: ("b", "k"))
+
+    def boom(bucket_name, object_key):
+        raise RuntimeError("NoSuchKey")
+
+    monkeypatch.setattr(storage, "read_object_bytes", boom)
+
+    try:
+        storage._ssrf_safe_get("http://minio:9000/b/k")
+    except RequestException as e:
+        assert "storage read failed for b/k" in str(e)
+    else:
+        raise AssertionError("a failed storage read must surface as a transient RequestException")
+
+
+def test_an_oversized_object_is_refused(monkeypatch):
+    from tfc.utils import storage
+
+    monkeypatch.setattr(storage, "own_storage_object", lambda url: ("b", "k"))
+    monkeypatch.setattr(storage, "read_object_bytes", lambda b, k: b"x" * 100)
+
+    try:
+        storage._ssrf_safe_get("http://minio:9000/b/k", max_bytes=10)
+    except ValueError as e:
+        assert "exceeds maximum size" in str(e)
+    else:
+        raise AssertionError("the size cap must apply to our own objects too")

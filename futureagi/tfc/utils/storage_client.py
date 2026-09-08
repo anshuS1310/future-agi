@@ -113,6 +113,65 @@ def server_reachable_url(file_url: str) -> str:
     return parsed._replace(scheme=scheme, netloc=internal_host).geturl()
 
 
+def own_storage_object(file_url: str) -> tuple[str, str] | None:
+    """The ``(bucket, key)`` this URL names if it is an object in our own storage, else None.
+
+    A URL we minted for our own bucket is not a remote fetch. Reading it through the storage
+    client works identically on S3, GCS and MinIO, and needs no HTTP request to a host that an
+    SSRF guard would refuse -- which is what happens on the MinIO stack, where the only
+    server-reachable endpoint is a private address by construction. Genuinely external audio (a
+    provider's own recording URL) returns None here and keeps going through the guarded fetch,
+    which is exactly where that guard belongs.
+    """
+    if not file_url:
+        return None
+    try:
+        parsed = urlparse(file_url)
+    except Exception:  # noqa: BLE001 - an unparseable URL is simply not ours
+        return None
+    path = (parsed.path or "").lstrip("/")
+    if not parsed.netloc or not path:
+        return None
+
+    def split(candidate: str) -> tuple[str, str] | None:
+        bucket, _, key = candidate.partition("/")
+        return (bucket, key) if bucket and key else None
+
+    if STORAGE_BACKEND == "gcs":
+        return split(path) if parsed.netloc == "storage.googleapis.com" else None
+
+    if STORAGE_BACKEND == "minio":
+        hosts = {
+            host
+            for host, _ in (
+                _parse_endpoint(os.getenv("MINIO_URL", "http://localhost:9005")),
+                _parse_endpoint(os.getenv("S3_ENDPOINT_URL", "http://minio:9000")),
+                _parse_endpoint(os.getenv("S3_ENDPOINT", "") or "http://minio:9000"),
+            )
+            if host
+        }
+        return split(path) if parsed.netloc in hosts else None
+
+    if not parsed.netloc.endswith(".amazonaws.com"):
+        return None
+    if ".s3." in parsed.netloc:  # virtual-hosted form
+        bucket = parsed.netloc.split(".s3.", 1)[0]
+        return (bucket, path) if bucket else None
+    return split(path)  # path-style
+
+
+def read_object_bytes(bucket_name: str, object_key: str) -> bytes:
+    """Read one of our own objects through the storage client."""
+    response = None
+    try:
+        response = get_storage_client().get_object(bucket_name, object_key)
+        return response.read()
+    finally:
+        if response is not None:
+            response.close()
+            response.release_conn()
+
+
 def extract_object_key(file_url: str, bucket_name: str) -> str:
     """Extract the object key from a storage URL (S3, GCS, or MinIO)."""
     if "storage.googleapis.com" in file_url:

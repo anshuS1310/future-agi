@@ -121,3 +121,65 @@ def test_gcs_client_falls_back_to_auto_region(monkeypatch):
     storage_client.get_storage_client()
 
     assert captured["kwargs"]["region"] == "auto"
+
+
+def test_minio_urls_are_recognised_as_our_own_object(monkeypatch):
+    """On MinIO the server-reachable endpoint is a private address by construction, so an eval can
+    only read our recordings by bucket and key rather than over a guarded HTTP fetch."""
+    storage_client = reload_storage_client(
+        monkeypatch,
+        STORAGE_BACKEND="minio",
+        MINIO_URL="http://localhost:9005",
+        S3_ENDPOINT_URL="http://minio:9000",
+    )
+
+    expected = ("fi-content-dev", "alk-harness/run/call/object")
+    assert (
+        storage_client.own_storage_object(
+            "http://localhost:9005/fi-content-dev/alk-harness/run/call/object"
+        )
+        == expected
+    )
+    assert (
+        storage_client.own_storage_object(
+            "http://minio:9000/fi-content-dev/alk-harness/run/call/object"
+        )
+        == expected
+    )
+
+
+def test_a_provider_recording_url_is_not_our_own_object(monkeypatch):
+    """The SSRF guard must keep protecting genuinely remote audio."""
+    storage_client = reload_storage_client(
+        monkeypatch,
+        STORAGE_BACKEND="minio",
+        MINIO_URL="http://localhost:9005",
+        S3_ENDPOINT_URL="http://minio:9000",
+    )
+
+    assert storage_client.own_storage_object("https://api.vapi.ai/recording/abc.mp3") is None
+    assert storage_client.own_storage_object("http://169.254.169.254/latest/meta-data") is None
+    assert storage_client.own_storage_object("") is None
+    assert storage_client.own_storage_object("http://localhost:9005/") is None
+    assert storage_client.own_storage_object("http://localhost:9005/bucket-only") is None
+
+
+def test_s3_object_urls_are_recognised_in_both_addressing_forms(monkeypatch):
+    storage_client = reload_storage_client(monkeypatch, STORAGE_BACKEND="s3")
+
+    assert storage_client.own_storage_object(
+        "https://fi-content.s3.us-east-2.amazonaws.com/calls/one.mp3"
+    ) == ("fi-content", "calls/one.mp3")
+    assert storage_client.own_storage_object(
+        "https://s3.us-east-2.amazonaws.com/fi-content/calls/one.mp3"
+    ) == ("fi-content", "calls/one.mp3")
+    assert storage_client.own_storage_object("https://example.com/fi-content/one.mp3") is None
+
+
+def test_gcs_object_urls_are_recognised(monkeypatch):
+    storage_client = reload_storage_client(monkeypatch, STORAGE_BACKEND="gcs")
+
+    assert storage_client.own_storage_object(
+        "https://storage.googleapis.com/fi-content/calls/one.mp3"
+    ) == ("fi-content", "calls/one.mp3")
+    assert storage_client.own_storage_object("https://storage.example.com/fi-content/one.mp3") is None

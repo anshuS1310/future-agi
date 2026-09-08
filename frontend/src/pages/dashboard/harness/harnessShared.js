@@ -4,7 +4,12 @@ import { STATUS_TYPES } from "src/utils/statusUtils";
 
 export const terminalStages = new Set(["completed", "failed", "canceled"]);
 
-// The ordered pipeline, mirroring HarnessStage in the ALK wheel (fi/alk/harness/job.py).
+// The ordered pipeline. Ordered by when the runner actually reaches each stage, which is not
+// the declaration order of HarnessStage in the ALK wheel (fi/alk/harness/job.py): the runner
+// validates the environment after the scenarios exist, because that validation runs their
+// reference solutions. Listing it in enum order made the checklist rewind, ticking scenario
+// stages green and then back to pending. This is the same divergence already noted below for
+// cleaning_up and uploading_artifacts.
 // "failed" and "canceled" are outcomes rather than positions, so they stay out: a stage
 // missing from this list indexes to -1, which strands the checklist showing nothing reached
 // and pins the progress bar at its 2% floor.
@@ -14,9 +19,9 @@ export const stages = [
   "understanding_agent",
   "generating_environment",
   "building_environment",
-  "validating_environment",
   "generating_data",
   "generating_scenarios",
+  "validating_environment",
   "validating_scenarios",
   "connecting_agent",
   "running",

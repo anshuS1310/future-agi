@@ -308,9 +308,10 @@ def provision_alk_sim_run_test(
       render in the UI. A run-test-level ``simulator_agent`` is set from the
       scenarios so the batch never writes ``simulator_agent`` back onto the
       shared scenario. Preferred.
-    * ``personas`` — fabricate one COMPLETED persona-dataset scenario per persona
-      (see ``_build_persona_scenario_dataset``). Self-contained fallback; the
-      dataset lacks the generated ``column_config`` the scenarios UI reads.
+    * ``personas`` — create one COMPLETED dataset scenario whose rows are the
+      supplied personas (see ``_build_persona_scenario_dataset``). This matches
+      the platform's native dataset model: a scenario suite is one dataset and
+      every conversation case is one datapoint.
 
     One CallExecution is created per dataset row at batch time, so keep the row
     count (== persona count, or the reused scenarios' rows) equal to the
@@ -376,7 +377,12 @@ def provision_alk_sim_run_test(
         )
 
         scenarios = _create_persona_scenarios(
-            organization, workspace, agent_definition, personas
+            organization,
+            workspace,
+            agent_definition,
+            personas,
+            suite_name=name,
+            description=description,
         )
 
         run_test = RunTest.objects.create(
@@ -392,13 +398,33 @@ def provision_alk_sim_run_test(
 
 
 def append_alk_sim_scenarios(run_test, personas):
-    """Append new persona scenarios to an existing ALK run test, reusing its agent
-    definition + workspace, and attach them to the run's scenario set — used by the hosted
-    "add scenarios" follow-up so the extended world's new personas land on the same run."""
+    """Append persona rows to an existing ALK scenario dataset.
+
+    Returns ``(scenario, rows)`` so the hosted registration can retain the exact
+    scenario-key -> dataset-row identity. Jobs provisioned before grouped
+    datasets existed retain the legacy one-scenario-per-persona representation.
+    """
     from django.db import transaction
 
     with transaction.atomic():
-        created = _create_persona_scenarios(
+        existing = list(run_test.scenarios.filter(deleted=False).order_by("created_at"))
+        if (
+            len(existing) == 1
+            and (existing[0].metadata or {}).get("origin")
+            == "alk_sdk_ingestion_grouped"
+            and existing[0].dataset_id
+        ):
+            scenario = existing[0]
+            rows = _append_persona_dataset_rows(scenario.dataset, personas)
+            metadata = dict(scenario.metadata or {})
+            metadata["persona_count"] = scenario.dataset.row_set.filter(
+                deleted=False
+            ).count()
+            scenario.metadata = metadata
+            scenario.save(update_fields=["metadata", "updated_at"])
+            return scenario, rows
+
+        created = _create_persona_scenarios_legacy(
             run_test.organization,
             run_test.workspace,
             run_test.agent_definition,
@@ -406,56 +432,57 @@ def append_alk_sim_scenarios(run_test, personas):
             name_offset=run_test.scenarios.count(),
         )
         run_test.scenarios.add(*created)
-    return created
+        return None, created
 
 
 def _create_persona_scenarios(
-    organization, workspace, agent_definition, personas, *, name_offset=0
+    organization,
+    workspace,
+    agent_definition,
+    personas,
+    *,
+    suite_name,
+    description="",
 ):
-    """Create one DATASET scenario per persona (a 1-row persona/situation dataset), shared by
-    fresh provisioning and the extend-append path. ``name_offset`` continues the ``persona-N``
-    fallback numbering so appended personas never collide with the originals."""
+    """Create one DATASET scenario with one row per authored persona."""
     from model_hub.models.choices import StatusType
 
-    created: list[Scenarios] = []
-    for idx, persona in enumerate(personas):
-        persona = dict(persona or {})
-        persona_name = (
-            persona.get("name") or f"persona-{name_offset + idx + 1}"
-        ).strip()
-        situation = (persona.get("situation") or "").strip()
-        # The run-test title supplies the agent/run context; ALK sends the behavior under
-        # test separately from persona identity, so the scenario name stays specific.
-        scenario_name = (
-            persona.get("scenario_name") or situation or persona_name
-        ).strip()[:255]
-        # A real 1-row dataset lets the simulator prompt's {{persona}}/{{situation}}
-        # placeholders resolve and renders the scenario with persona rows.
-        dataset = _build_persona_scenario_dataset(
-            organization, scenario_name, persona, workspace=workspace
-        )
-        created.append(
-            Scenarios.objects.create(
-                name=scenario_name,
-                # ``clean()`` rejects blank source; fall back to the name.
-                source=situation or persona_name,
-                scenario_type=Scenarios.ScenarioTypes.DATASET,
-                source_type=Scenarios.SourceTypes.AGENT_DEFINITION,
-                agent_definition=agent_definition,
-                organization=organization,
-                workspace=workspace,
-                dataset=dataset,
-                status=StatusType.COMPLETED.value,
-                metadata={"origin": "alk_sdk_ingestion", "persona": persona},
-            )
-        )
-    return created
+    personas = [dict(persona or {}) for persona in (personas or [])]
+    only_persona = personas[0] if len(personas) == 1 else None
+    scenario_name = str(
+        (only_persona or {}).get("scenario_name")
+        or (only_persona or {}).get("situation")
+        or suite_name
+        or "ALK scenario suite"
+    ).strip()[:255]
+    dataset, _rows = _build_persona_scenario_dataset(
+        organization, scenario_name, personas, workspace=workspace
+    )
+    first_situation = str((personas[0] if personas else {}).get("situation") or "")
+    scenario = Scenarios.objects.create(
+        name=scenario_name,
+        source=str(description or first_situation or scenario_name),
+        description=description or None,
+        scenario_type=Scenarios.ScenarioTypes.DATASET,
+        source_type=Scenarios.SourceTypes.AGENT_DEFINITION,
+        agent_definition=agent_definition,
+        organization=organization,
+        workspace=workspace,
+        dataset=dataset,
+        status=StatusType.COMPLETED.value,
+        metadata={
+            "origin": "alk_sdk_ingestion_grouped",
+            "persona_count": len(personas),
+            **({"persona": only_persona} if only_persona is not None else {}),
+        },
+    )
+    return [scenario]
 
 
 def _build_persona_scenario_dataset(
-    organization, scenario_name: str, persona: dict, *, workspace=None
+    organization, scenario_name: str, personas: list[dict], *, workspace=None
 ):
-    """Materialize one SDK persona as a 1-row scenario dataset.
+    """Materialize an SDK scenario suite as one multi-row dataset.
 
     Mirrors the native dataset-scenario grid (persona / situation / outcome
     columns) minus the async LLM generation — the SDK already carries the
@@ -463,30 +490,16 @@ def _build_persona_scenario_dataset(
     the scenarios tab) and lets ``_generate_dynamic_prompt`` resolve the
     ``{{persona}}`` / ``{{situation}}`` placeholders against it.
     """
-    import json
-
     from model_hub.models.choices import (
         DatasetSourceChoices,
         DataTypeChoices,
         SourceChoices,
         StatusType,
     )
-    from model_hub.models.develop_dataset import Cell, Column, Dataset, Row
-
-    persona = dict(persona or {})
-    identity = persona.get("persona")
-    if not isinstance(identity, dict):
-        identity = {
-            key: value
-            for key, value in (
-                ("name", persona.get("name")),
-                ("role", persona.get("role")),
-            )
-            if value
-        }
+    from model_hub.models.develop_dataset import Column, Dataset
 
     dataset = Dataset.objects.create(
-        name=f"{scenario_name} · personas"[:2000],
+        name=f"{scenario_name} · scenarios"[:2000],
         source=DatasetSourceChoices.SCENARIO.value,
         organization=organization,
         workspace=workspace,
@@ -506,19 +519,110 @@ def _build_persona_scenario_dataset(
         )
         for col_name, data_type in column_specs
     }
-    row = Row.objects.create(dataset=dataset, order=0)
-    values = {
-        "persona": json.dumps(identity, ensure_ascii=False),
-        "situation": (persona.get("situation") or "").strip(),
-        "outcome": (persona.get("outcome") or "").strip(),
-    }
-    Cell.objects.bulk_create(
-        [
+    rows = _append_persona_dataset_rows(dataset, personas, columns=columns)
+    return dataset, rows
+
+
+def _append_persona_dataset_rows(dataset, personas, *, columns=None):
+    """Append persona datapoints, preserving stable row order."""
+    import json
+
+    from model_hub.models.develop_dataset import Cell, Column, Row
+
+    if columns is None:
+        columns = {
+            column.name: column for column in Column.objects.filter(dataset=dataset)
+        }
+    required = {"persona", "situation", "outcome"}
+    if not required.issubset(columns):
+        raise ALKSimulateIngestionError(
+            "ALK scenario dataset is missing persona, situation, or outcome columns"
+        )
+    last_order = (
+        Row.objects.filter(dataset=dataset, deleted=False)
+        .order_by("-order")
+        .values_list("order", flat=True)
+        .first()
+    )
+    start_order = 0 if last_order is None else last_order + 1
+    rows = []
+    cells = []
+    for offset, raw_persona in enumerate(personas or []):
+        persona = dict(raw_persona or {})
+        identity = persona.get("persona")
+        if not isinstance(identity, dict):
+            identity = {
+                key: value
+                for key, value in (
+                    ("name", persona.get("name")),
+                    ("role", persona.get("role")),
+                )
+                if value
+            }
+        row = Row(
+            dataset=dataset,
+            order=start_order + offset,
+            metadata={"scenario_name": persona.get("scenario_name") or ""},
+        )
+        rows.append(row)
+    Row.objects.bulk_create(rows)
+    for row, raw_persona in zip(rows, personas or [], strict=True):
+        persona = dict(raw_persona or {})
+        identity = persona.get("persona")
+        if not isinstance(identity, dict):
+            identity = {
+                key: value
+                for key, value in (
+                    ("name", persona.get("name")),
+                    ("role", persona.get("role")),
+                )
+                if value
+            }
+        values = {
+            "persona": json.dumps(identity, ensure_ascii=False),
+            "situation": str(persona.get("situation") or "").strip(),
+            "outcome": str(persona.get("outcome") or "").strip(),
+        }
+        cells.extend(
             Cell(dataset=dataset, column=columns[key], row=row, value=value)
             for key, value in values.items()
-        ]
-    )
-    return dataset
+        )
+    Cell.objects.bulk_create(cells)
+    return rows
+
+
+def _create_persona_scenarios_legacy(
+    organization, workspace, agent_definition, personas, *, name_offset=0
+):
+    """Compatibility path for extending jobs created before grouped datasets."""
+    from model_hub.models.choices import StatusType
+
+    created = []
+    for idx, persona in enumerate(personas or []):
+        persona = dict(persona or {})
+        persona_name = str(persona.get("name") or f"persona-{name_offset + idx + 1}")
+        situation = str(persona.get("situation") or "").strip()
+        scenario_name = str(
+            persona.get("scenario_name") or situation or persona_name
+        ).strip()[:255]
+        dataset, _rows = _build_persona_scenario_dataset(
+            organization, scenario_name, [persona], workspace=workspace
+        )
+        created.append(
+            Scenarios.objects.create(
+                name=scenario_name,
+                source=situation or persona_name,
+                scenario_type=Scenarios.ScenarioTypes.DATASET,
+                source_type=Scenarios.SourceTypes.AGENT_DEFINITION,
+                agent_definition=agent_definition,
+                organization=organization,
+                workspace=workspace,
+                dataset=dataset,
+                status=StatusType.COMPLETED.value,
+                metadata={"origin": "alk_sdk_ingestion", "persona": persona},
+            )
+        )
+    return created
 
 
 def create_alk_sim_test_execution(

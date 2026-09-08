@@ -165,6 +165,17 @@ class HostedHarnessScenario(BaseModel):
         on_delete=models.CASCADE,
         related_name="hosted_registrations",
     )
+    dataset_row = models.ForeignKey(
+        "model_hub.Row",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="hosted_registrations",
+        help_text=(
+            "The exact row represented by this hosted scenario key. Multiple "
+            "registrations can share one dataset-backed scenario."
+        ),
+    )
     call_execution = models.OneToOneField(
         "simulate.CallExecution",
         on_delete=models.SET_NULL,

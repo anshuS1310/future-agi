@@ -24,8 +24,8 @@ from simulate.models import (
     AgentDefinition,
     RunTest,
     Scenarios,
-    SimulatorAgent,
     SimulateEvalConfig,
+    SimulatorAgent,
 )
 from simulate.models.test_execution import (
     CallExecution,
@@ -206,8 +206,8 @@ class TestProvisionRunTest:
         assert scenario.status == StatusType.COMPLETED.value
         assert scenario.metadata["persona"]["name"] == "Sam"
 
-        # A real 1-row persona dataset backs the scenario so it renders with a
-        # row and the {{persona}}/{{situation}} placeholders resolve.
+        # A real persona dataset backs the scenario so it renders with a row
+        # and the {{persona}}/{{situation}} placeholders resolve.
         from model_hub.models.develop_dataset import Cell, Row
 
         assert scenario.dataset_id is not None
@@ -220,6 +220,53 @@ class TestProvisionRunTest:
         assert cell_values["situation"] == "refund please"
         assert cell_values["outcome"] == "refunded"
         assert json.loads(cell_values["persona"])["name"] == "Sam"
+
+    def test_provision_groups_personas_as_rows_in_one_dataset(self, auth_client):
+        resp = self._provision(
+            auth_client,
+            name="refund-suite",
+            personas=[
+                {
+                    "name": "Sam",
+                    "scenario_name": "Late refund",
+                    "situation": "My refund is late",
+                    "outcome": "Explain the status",
+                },
+                {
+                    "name": "Avery",
+                    "scenario_name": "Duplicate charge",
+                    "situation": "I was charged twice",
+                    "outcome": "Reverse the duplicate",
+                },
+            ],
+        )
+        assert resp.status_code == 200, resp.content
+        result = resp.json()["result"]
+        assert len(result["scenario_ids"]) == 1
+
+        run_test = RunTest.objects.get(id=result["run_test_id"])
+        scenario = run_test.scenarios.get()
+        assert scenario.name == "refund-suite"
+        assert scenario.metadata["origin"] == "alk_sdk_ingestion_grouped"
+        assert scenario.metadata["persona_count"] == 2
+
+        from model_hub.models.develop_dataset import Cell, Dataset, Row
+
+        assert Dataset.objects.filter(id=scenario.dataset_id).count() == 1
+        rows = list(Row.objects.filter(dataset=scenario.dataset).order_by("order"))
+        assert len(rows) == 2
+        situations = [
+            Cell.objects.get(row=row, column__name="situation").value for row in rows
+        ]
+        assert situations == ["My refund is late", "I was charged twice"]
+
+        _test_execution_id, call_ids = _start_and_batch(auth_client, run_test)
+        assert len(call_ids) == 2
+        assert set(
+            CallExecution.objects.filter(id__in=call_ids).values_list(
+                "row_id", flat=True
+            )
+        ) == {row.id for row in rows}
 
     def test_provision_voice_preserves_voice_call_type(self, auth_client):
         resp = self._provision(

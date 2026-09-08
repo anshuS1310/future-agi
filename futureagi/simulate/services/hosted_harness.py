@@ -268,7 +268,6 @@ def request_cancellation(job: HostedHarnessJob, reason: str) -> HostedHarnessJob
         return locked
 
 
-
 def _is_bare_uuid(value: str) -> bool:
     """Return True when *value* looks like a bare UUID (no surrounding text)."""
     try:
@@ -278,7 +277,7 @@ def _is_bare_uuid(value: str) -> bool:
         return False
 
 
-def _derive_name_from_job(job: "HostedHarnessJob") -> str:
+def _derive_name_from_job(job: HostedHarnessJob) -> str:
     """Derive a human-readable run name from the job when the guest sends a UUID."""
     source = (job.payload or {}).get("source", {})
     repo = source.get("repository", "") if isinstance(source, dict) else ""
@@ -289,7 +288,7 @@ def _derive_name_from_job(job: "HostedHarnessJob") -> str:
     return f"simulation-{str(job.id)[:8]}"
 
 
-def _derive_agent_name_from_job(job: "HostedHarnessJob") -> str:
+def _derive_agent_name_from_job(job: HostedHarnessJob) -> str:
     """Derive an agent name from the job's contract stage output."""
     for output in job.stage_outputs or []:
         if not isinstance(output, dict) or output.get("kind") != "contract":
@@ -350,20 +349,27 @@ def provision_scenarios(
             for persona in payload["personas"]
             if persona["scenario_key"] not in existing_set
         ]
-        new_scenarios = append_alk_sim_scenarios(
+        shared_scenario, appended = append_alk_sim_scenarios(
             job.run_test,
             [
                 {key: value for key, value in persona.items() if key != "scenario_key"}
                 for persona in new_personas
             ],
         )
+        if shared_scenario is not None:
+            bindings = [(shared_scenario, row) for row in appended]
+        else:
+            # Compatibility for a job provisioned with the former one-row,
+            # one-scenario layout before this deployment.
+            bindings = [(scenario, None) for scenario in appended]
         with transaction.atomic():
-            for persona, scenario in zip(new_personas, new_scenarios, strict=True):
+            for persona, (scenario, row) in zip(new_personas, bindings, strict=True):
                 registrations.append(
                     HostedHarnessScenario.no_workspace_objects.create(
                         job=job,
                         scenario_key=persona["scenario_key"],
                         scenario=scenario,
+                        dataset_row=row,
                     )
                 )
         return _provision_response(job, registrations)
@@ -400,10 +406,20 @@ def provision_scenarios(
         )
     except ALKSimulateIngestionError as exc:
         raise HostedHarnessError("scenario_provision_failed", str(exc)) from exc
-    if len(scenarios) != len(payload["personas"]):
+    if len(scenarios) != 1 or not scenarios[0].dataset_id:
         raise HostedHarnessError(
             "scenario_provision_count_mismatch",
-            "scenario provisioning did not preserve the requested cardinality",
+            "scenario provisioning did not create one dataset-backed suite",
+            status_code=500,
+            retryable=True,
+        )
+    dataset_rows = list(
+        scenarios[0].dataset.row_set.filter(deleted=False).order_by("order", "id")
+    )
+    if len(dataset_rows) != len(payload["personas"]):
+        raise HostedHarnessError(
+            "scenario_provision_count_mismatch",
+            "scenario dataset row count did not preserve the requested cardinality",
             status_code=500,
             retryable=True,
         )
@@ -423,9 +439,10 @@ def provision_scenarios(
             HostedHarnessScenario.no_workspace_objects.create(
                 job=locked,
                 scenario_key=persona["scenario_key"],
-                scenario=scenario,
+                scenario=scenarios[0],
+                dataset_row=row,
             )
-            for persona, scenario in zip(payload["personas"], scenarios, strict=True)
+            for persona, row in zip(payload["personas"], dataset_rows, strict=True)
         ]
         _record_target_agent_facts(locked, agent_definition, payload)
         _select_platform_evals(locked, run_test, payload, modality)
@@ -546,7 +563,7 @@ def begin_scenarios(
         )
     registrations = list(
         HostedHarnessScenario.no_workspace_objects.filter(job=job).select_related(
-            "scenario", "call_execution"
+            "scenario", "dataset_row", "call_execution"
         )
     )
     by_key = {item.scenario_key: item for item in registrations}
@@ -567,7 +584,9 @@ def begin_scenarios(
             execution = TestExecution.no_workspace_objects.select_for_update().get(
                 id=job.test_execution_id
             )
-            existing_ids = [str(sid) for sid in (execution.scenario_ids or [])]
+            existing_ids = list(
+                dict.fromkeys(str(sid) for sid in (execution.scenario_ids or []))
+            )
             existing_id_set = set(existing_ids)
             added_ids = [
                 str(item.scenario_id)
@@ -585,12 +604,10 @@ def begin_scenarios(
         added_calls = CallExecution.no_workspace_objects.filter(
             id__in=batch.call_execution_ids
         ).select_related("scenario")
-        calls_by_scenario: dict[uuid.UUID, CallExecution] = {}
-        for call in added_calls:
-            calls_by_scenario.setdefault(call.scenario_id, call)
+        calls_by_key = {(call.scenario_id, call.row_id): call for call in added_calls}
         with transaction.atomic():
             for item in unlinked:
-                call = calls_by_scenario.get(item.scenario_id)
+                call = _call_for_registration(item, calls_by_key)
                 if call is None:
                     raise HostedHarnessError(
                         "scenario_call_mapping_incomplete",
@@ -604,7 +621,7 @@ def begin_scenarios(
 
     test_execution = create_alk_sim_test_execution(
         job.run_test,
-        scenario_ids=[item.scenario_id for item in registrations],
+        scenario_ids=list(dict.fromkeys(item.scenario_id for item in registrations)),
     )
     try:
         batch = create_alk_sim_call_execution_batch(
@@ -615,13 +632,16 @@ def begin_scenarios(
     calls = CallExecution.no_workspace_objects.filter(
         id__in=batch.call_execution_ids
     ).select_related("scenario")
-    calls_by_scenario: dict[uuid.UUID, CallExecution] = {}
-    for call in calls:
-        calls_by_scenario.setdefault(call.scenario_id, call)
-    if set(calls_by_scenario) != {item.scenario_id for item in registrations}:
+    calls_by_key = {(call.scenario_id, call.row_id): call for call in calls}
+    mapped_calls = [
+        _call_for_registration(item, calls_by_key) for item in registrations
+    ]
+    if any(call is None for call in mapped_calls) or len(set(mapped_calls)) != len(
+        registrations
+    ):
         raise HostedHarnessError(
             "scenario_call_mapping_incomplete",
-            "execution pre-allocation did not create exactly one scenario call",
+            "execution pre-allocation did not create exactly one call per dataset row",
             status_code=500,
             retryable=True,
         )
@@ -638,8 +658,8 @@ def begin_scenarios(
         locked.test_execution = test_execution
         locked.state = HostedHarnessJob.State.RUNNING
         locked.save(update_fields=["test_execution", "state", "updated_at"])
-        for registration in registrations:
-            registration.call_execution = calls_by_scenario[registration.scenario_id]
+        for registration, call in zip(registrations, mapped_calls, strict=True):
+            registration.call_execution = call
             registration.save(update_fields=["call_execution", "updated_at"])
     return _begin_response(locked, registrations)
 
@@ -800,6 +820,26 @@ def _provision_response(
             ],
         }
     }
+
+
+def _call_for_registration(
+    registration: HostedHarnessScenario,
+    calls_by_key: dict[tuple[uuid.UUID, uuid.UUID | None], CallExecution],
+) -> CallExecution | None:
+    """Resolve a hosted scenario key to its exact dataset-row call.
+
+    ``dataset_row`` is null only for registrations created by an older
+    deployment. Their legacy datasets contain exactly one row, so a unique
+    scenario match remains safe during a rolling upgrade.
+    """
+    if registration.dataset_row_id:
+        return calls_by_key.get((registration.scenario_id, registration.dataset_row_id))
+    matches = [
+        call
+        for (scenario_id, _row_id), call in calls_by_key.items()
+        if scenario_id == registration.scenario_id
+    ]
+    return matches[0] if len(matches) == 1 else None
 
 
 def _begin_response(

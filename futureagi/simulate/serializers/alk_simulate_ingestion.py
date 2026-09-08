@@ -209,9 +209,9 @@ class ALKSimulateProvisionRunTestRequestSerializer(serializers.Serializer):
     * ``scenario_ids`` — attach existing (natively generated) scenarios to a new
       RunTest. Nothing is fabricated or mutated; the scenarios render with their
       real datasets. Preferred.
-    * ``personas`` — a hand-built fallback: one COMPLETED persona-dataset scenario
-      per persona (see ``_build_persona_scenario_dataset``). Kept for the offline
-      self-contained path; the resulting dataset lacks the generated
+    * ``personas`` — a hand-built fallback: one COMPLETED scenario dataset with
+      one row per persona (see ``_build_persona_scenario_dataset``). Kept for the
+      offline self-contained path; the resulting dataset lacks the generated
       ``column_config`` the UI reads, so prefer ``scenario_ids``.
 
     Exactly one of the two must be supplied.
@@ -240,7 +240,7 @@ class ALKSimulateProvisionRunTestRequestSerializer(serializers.Serializer):
         if has_personas == has_scenarios:
             raise serializers.ValidationError(
                 "provide exactly one of 'scenario_ids' (reuse existing scenarios) "
-                "or 'personas' (fabricate a scenario per persona)"
+                "or 'personas' (fabricate one scenario dataset with a row per persona)"
             )
         return attrs
 

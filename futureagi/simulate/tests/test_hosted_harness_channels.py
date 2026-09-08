@@ -31,6 +31,169 @@ from simulate.services.hosted_harness_ingestion import (
 BASE = "/simulate/api/harness/attempts"
 
 
+@pytest.mark.django_db
+def test_hosted_personas_share_one_dataset_and_map_to_distinct_calls(organization):
+    job, _ = create_hosted_job(
+        organization,
+        _payload(scenario_count=2),
+        idempotency_key="grouped-scenario-dataset",
+    )
+    capability = register_attempt(job.id, endpoint_base_url="https://platform.example")
+    client = APIClient()
+    headers = _headers(capability)
+    personas = [
+        {
+            "scenario_key": "late-refund",
+            "name": "Sam",
+            "situation": "My refund is late",
+            "outcome": "Explain the status",
+        },
+        {
+            "scenario_key": "duplicate-charge",
+            "name": "Avery",
+            "situation": "I was charged twice",
+            "outcome": "Reverse the duplicate",
+        },
+    ]
+    provision = client.post(
+        f"{BASE}/{capability.attempt.id}/scenarios/",
+        {
+            "operation": "provision",
+            "name": "Billing support suite",
+            "modality": "text",
+            "personas": personas,
+        },
+        format="json",
+        **headers,
+    )
+    assert provision.status_code == 200, provision.content
+    provisioned = provision.json()["result"]
+    assert len({item["scenario_id"] for item in provisioned["scenarios"]}) == 1
+
+    registrations = list(
+        job.scenario_registrations.select_related("scenario", "dataset_row").order_by(
+            "created_at"
+        )
+    )
+    assert len(registrations) == 2
+    assert len({item.scenario_id for item in registrations}) == 1
+    assert len({item.dataset_row_id for item in registrations}) == 2
+    scenario = registrations[0].scenario
+    assert scenario.dataset.row_set.filter(deleted=False).count() == 2
+
+    begin = client.post(
+        f"{BASE}/{capability.attempt.id}/scenarios/",
+        {
+            "operation": "begin",
+            "run_test_id": provisioned["run_test_id"],
+            "scenario_keys": [item["scenario_key"] for item in personas],
+        },
+        format="json",
+        **headers,
+    )
+    assert begin.status_code == 200, begin.content
+    registrations = list(
+        job.scenario_registrations.select_related("call_execution").order_by(
+            "created_at"
+        )
+    )
+    assert len({item.call_execution_id for item in registrations}) == 2
+    assert {item.call_execution.row_id for item in registrations} == {
+        item.dataset_row_id for item in registrations
+    }
+
+
+@pytest.mark.django_db
+def test_chat_added_scenario_appends_a_row_without_replacing_existing_call(
+    organization,
+):
+    job, _ = create_hosted_job(
+        organization,
+        _payload(),
+        idempotency_key="append-grouped-scenario-row",
+    )
+    capability = register_attempt(job.id, endpoint_base_url="https://platform.example")
+    client = APIClient()
+    headers = _headers(capability)
+    first = {
+        "scenario_key": "late-refund",
+        "name": "Sam",
+        "situation": "My refund is late",
+        "outcome": "Explain the status",
+    }
+    provision = client.post(
+        f"{BASE}/{capability.attempt.id}/scenarios/",
+        {
+            "operation": "provision",
+            "name": "Billing support suite",
+            "modality": "text",
+            "personas": [first],
+        },
+        format="json",
+        **headers,
+    )
+    assert provision.status_code == 200, provision.content
+    provisioned = provision.json()["result"]
+    begin = client.post(
+        f"{BASE}/{capability.attempt.id}/scenarios/",
+        {
+            "operation": "begin",
+            "run_test_id": provisioned["run_test_id"],
+            "scenario_keys": [first["scenario_key"]],
+        },
+        format="json",
+        **headers,
+    )
+    assert begin.status_code == 200, begin.content
+    original = job.scenario_registrations.select_related("call_execution").get()
+    original_call_id = original.call_execution_id
+    dataset_id = original.scenario.dataset_id
+
+    second = {
+        "scenario_key": "duplicate-charge",
+        "name": "Avery",
+        "situation": "I was charged twice",
+        "outcome": "Reverse the duplicate",
+    }
+    HostedHarnessJob.no_workspace_objects.filter(id=job.id).update(scenario_count=2)
+    job.refresh_from_db()
+    extended = client.post(
+        f"{BASE}/{capability.attempt.id}/scenarios/",
+        {
+            "operation": "provision",
+            "name": "Billing support suite",
+            "modality": "text",
+            "personas": [first, second],
+        },
+        format="json",
+        **headers,
+    )
+    assert extended.status_code == 200, extended.content
+    resumed = client.post(
+        f"{BASE}/{capability.attempt.id}/scenarios/",
+        {
+            "operation": "begin",
+            "run_test_id": provisioned["run_test_id"],
+            "scenario_keys": [first["scenario_key"], second["scenario_key"]],
+        },
+        format="json",
+        **headers,
+    )
+    assert resumed.status_code == 200, resumed.content
+
+    registrations = list(
+        job.scenario_registrations.select_related(
+            "scenario", "call_execution"
+        ).order_by("created_at")
+    )
+    assert len(registrations) == 2
+    assert {item.scenario.dataset_id for item in registrations} == {dataset_id}
+    assert registrations[0].call_execution_id == original_call_id
+    assert registrations[1].call_execution_id != original_call_id
+    assert registrations[1].call_execution.row_id == registrations[1].dataset_row_id
+    assert registrations[0].scenario.dataset.row_set.filter(deleted=False).count() == 2
+
+
 def test_recording_content_type_uses_wave_signature_over_bad_sender_default():
     header = b"RIFF" + (36).to_bytes(4, "little") + b"WAVE"
     assert (

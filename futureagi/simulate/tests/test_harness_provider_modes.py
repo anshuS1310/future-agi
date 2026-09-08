@@ -26,6 +26,34 @@ def test_retell_environment_backed_accepts_repository_lifecycle():
     assert serializer.is_valid(), serializer.errors
 
 
+def test_retell_chat_connect_only_accepts_agent_and_dynamic_variables():
+    serializer = HarnessAgentSerializer(
+        data={
+            "connector": "retell_chat",
+            "mode": "connect_only",
+            "config": {
+                "agent_id": "chat-agent-123",
+                "dynamic_variables": {"customer_name": "Jane", "balance": 124},
+            },
+            "secret_refs": {},
+        }
+    )
+    assert serializer.is_valid(), serializer.errors
+
+
+def test_retell_chat_rejects_environment_backed_mode():
+    serializer = HarnessAgentSerializer(
+        data={
+            "connector": "retell_chat",
+            "mode": "environment_backed",
+            "config": {},
+            "secret_refs": {},
+        }
+    )
+    assert not serializer.is_valid()
+    assert "mode" in serializer.errors
+
+
 def test_environment_backed_rejects_existing_target_id():
     serializer = HarnessAgentSerializer(
         data={

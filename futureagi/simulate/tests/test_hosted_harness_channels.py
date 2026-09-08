@@ -526,7 +526,9 @@ def test_failed_scenario_is_completed_call_in_the_submitting_workspace(
             {
                 "name": "discount_policy_followed",
                 "held": False,
-                "reason": "The agent offered an unsupported discount",
+                # DRF trims surrounding whitespace from CharFields. The digest
+                # covers the guest's wire JSON, before that normalization.
+                "reason": "The agent offered an unsupported discount ",
                 "judged": False,
             }
         ],

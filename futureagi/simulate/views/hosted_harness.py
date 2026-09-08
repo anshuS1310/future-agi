@@ -79,7 +79,11 @@ class HostedHarnessAttemptViewSet(viewsets.ViewSet):
     )
     @action(detail=True, methods=["post"])
     def results(self, request, pk=None):
-        _, created = ingest_result_receipt(self._attempt, request.validated_data)
+        _, created = ingest_result_receipt(
+            self._attempt,
+            request.validated_data,
+            digest_body=request.data,
+        )
         return Response({"accepted": True, "duplicate": not created})
 
     @validated_request(
@@ -168,7 +172,11 @@ class HostedHarnessAttemptViewSet(viewsets.ViewSet):
     )
     @action(detail=True, methods=["post"], url_path=r"artifacts/manifest")
     def artifact_manifest(self, request, pk=None):
-        _, created = ingest_manifest(self._attempt, request.validated_data)
+        _, created = ingest_manifest(
+            self._attempt,
+            request.validated_data,
+            digest_body=request.data,
+        )
         return Response({"accepted": True, "duplicate": not created})
 
     @swagger_auto_schema(
@@ -212,4 +220,3 @@ class HostedHarnessAttemptViewSet(viewsets.ViewSet):
             {"artifact_id": f"sha256:{artifact_digest}", "duplicate": not created},
             status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
         )
-

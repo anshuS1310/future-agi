@@ -867,7 +867,7 @@ def _connector_egress_domains(
             host = _hostname_from_url(value)
             if host:
                 domains.add(host)
-    elif connector == "retell":
+    elif connector in {"retell", "retell_chat"}:
         domains.add("api.retellai.com")
         api_url = _config_value(
             config, "api_url", "api_base_url", "retell_api_url", "RETELL_API_URL"
@@ -1323,6 +1323,7 @@ class DaytonaHostedGateway:
             provider_domain = {
                 "vapi": "api.vapi.ai",
                 "retell": "api.retellai.com",
+                "retell_chat": "api.retellai.com",
             }.get(connector)
             if provider_domain and provider_domain not in allowed_domains:
                 allowed_domains = [provider_domain, *allowed_domains][:20]
@@ -2419,23 +2420,44 @@ class DaytonaHostedGateway:
             )
             retry_pending = self._should_retry(attempt, "infrastructure")
         elif exit_code != 0 and not attempt.terminal_event_received:
-            authoring_invalid = exit_code == 78
+            guest_logs = observation.get("logs", "")
+            # Older/full-pipeline guests return the stage's status directly. A failed
+            # environment-authoring stage therefore exits 1, which used to be reported and
+            # retried as an infrastructure crash even when the log explicitly said that no
+            # world was saved. Preserve exit 78 for runtime validation and recognize the durable
+            # authoring marker for backward-compatible snapshots.
+            authoring_failed = any(
+                marker in (guest_logs or "").replace("\x01", "")
+                for marker in (
+                    "automatic run stopped: environment failed",
+                    "No world was saved.",
+                )
+            )
+            authoring_invalid = exit_code == 78 or authoring_failed
             label = (
                 "Generated environment failed real-runtime validation after bounded repair"
-                if authoring_invalid
+                if exit_code == 78
+                else "Environment authoring failed before a runnable world was saved"
+                if authoring_failed
                 else f"guest entrypoint exited {exit_code}"
             )
-            cause = guest_failure_cause(observation.get("logs", ""))
+            cause = guest_failure_cause(guest_logs)
             attempt.terminal_stage = "failed"
             attempt.terminal_failure = {
                 "domain": "environment" if authoring_invalid else "infrastructure",
-                "stage": "validating_environment" if authoring_invalid else "running",
+                "stage": "validating_environment"
+                if exit_code == 78
+                else "generating_environment"
+                if authoring_failed
+                else "running",
                 "code": "authoring_runtime_validation_failed"
-                if authoring_invalid
+                if exit_code == 78
+                else "authoring_failed"
+                if authoring_failed
                 else "guest_crashed",
                 "message": f"{label}: {cause}" if cause else label,
                 "details": {
-                    "guest_log_tail": observation.get("logs", ""),
+                    "guest_log_tail": guest_logs,
                     "process_logs": observation.get("process_logs", ""),
                 },
             }
@@ -2771,11 +2793,14 @@ def _provider_import_authoring_material(
     """Resolve only the provider key needed for read-only imported-target inspection."""
     agent = payload.get("agent") or {}
     connector = str(agent.get("connector") or "").strip().lower()
-    if str(agent.get("mode") or "") != "provider_import":
+    mode = str(agent.get("mode") or "")
+    inspect_connect_only_chat = mode == "connect_only" and connector == "retell_chat"
+    if mode != "provider_import" and not inspect_connect_only_chat:
         return {}, connector
     secret_name = {
         "vapi": "VAPI_API_KEY",
         "retell": "RETELL_API_KEY",
+        "retell_chat": "RETELL_API_KEY",
     }.get(connector)
     if not secret_name:
         return {}, connector

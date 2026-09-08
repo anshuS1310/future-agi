@@ -59,6 +59,30 @@ const readableSize = (bytes = 0) => {
   return `${(bytes / 1024 / 1024).toFixed(1)} MiB`;
 };
 
+export const parseProviderDynamicVariables = (text) => {
+  if (!text.trim()) return {};
+  let value;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    throw new Error("Dynamic variables must be valid JSON.");
+  }
+  if (
+    !value ||
+    Array.isArray(value) ||
+    typeof value !== "object" ||
+    Object.entries(value).some(
+      ([name, item]) =>
+        !name || !["string", "number", "boolean"].includes(typeof item),
+    )
+  ) {
+    throw new Error(
+      "Dynamic variables must be a JSON object with string, number, or boolean values.",
+    );
+  }
+  return value;
+};
+
 // `run()` always performs a fresh preflight before it creates the job.  Keep
 // the button available without a prior manual check so users cannot get stuck
 // behind an undocumented "Check again" prerequisite.
@@ -171,6 +195,7 @@ export default function HarnessCreate() {
   const [connector, setConnector] = useState("auto");
   const [providerMode, setProviderMode] = useState("environment_backed");
   const [providerTargetId, setProviderTargetId] = useState("");
+  const [providerDynamicVariables, setProviderDynamicVariables] = useState("");
   const [scenarioCount, setScenarioCount] = useState(10);
   const [preflight, setPreflight] = useState(null);
   // Shown beside the Preflight button: the general error banner sits at the foot of the
@@ -277,7 +302,7 @@ export default function HarnessCreate() {
     source: sourcePayload(),
     agent: {
       connector,
-      ...(connector === "vapi" || connector === "retell"
+      ...(["vapi", "retell", "retell_chat"].includes(connector)
         ? { mode: providerMode }
         : {}),
       config: {
@@ -288,14 +313,23 @@ export default function HarnessCreate() {
         ...(connector === "vapi" && providerMode === "provider_import"
           ? { assistant_id: providerTargetId.trim() }
           : {}),
-        ...(connector === "retell" && providerMode === "connect_only"
+        ...(["retell", "retell_chat"].includes(connector) &&
+        providerMode === "connect_only"
           ? { agent_id: providerTargetId.trim() }
           : {}),
-        ...(connector === "retell" && providerMode === "provider_import"
+        ...(["retell", "retell_chat"].includes(connector) &&
+        providerMode === "provider_import"
           ? { agent_id: providerTargetId.trim() }
+          : {}),
+        ...(connector === "retell_chat" && providerDynamicVariables.trim()
+          ? {
+              dynamic_variables: parseProviderDynamicVariables(
+                providerDynamicVariables,
+              ),
+            }
           : {}),
         ...(providerMode === "environment_backed" &&
-        (connector === "vapi" || connector === "retell")
+        ["vapi", "retell", "retell_chat"].includes(connector)
           ? { lifecycle_manifest: "alk.yaml" }
           : {}),
       },
@@ -501,7 +535,7 @@ export default function HarnessCreate() {
   const providerApiKeyName =
     connector === "vapi"
       ? "VAPI_API_KEY"
-      : connector === "retell"
+      : ["retell", "retell_chat"].includes(connector)
         ? "RETELL_API_KEY"
         : null;
   const providerApiKeyConfigured =
@@ -1241,6 +1275,9 @@ export default function HarnessCreate() {
                     value={connector}
                     onChange={(event) => {
                       setConnector(event.target.value);
+                      if (event.target.value === "retell_chat") {
+                        setProviderMode("connect_only");
+                      }
                       setPreflightDirty(Boolean(preflight));
                     }}
                     sx={{ maxWidth: 320 }}
@@ -1249,9 +1286,10 @@ export default function HarnessCreate() {
                     <MenuItem value="livekit">LiveKit</MenuItem>
                     <MenuItem value="vapi">Vapi</MenuItem>
                     <MenuItem value="retell">Retell</MenuItem>
+                    <MenuItem value="retell_chat">Retell chat</MenuItem>
                   </TextField>
 
-                  {(connector === "vapi" || connector === "retell") && (
+                  {["vapi", "retell", "retell_chat"].includes(connector) && (
                     <>
                       <Box
                         role="radiogroup"
@@ -1262,16 +1300,18 @@ export default function HarnessCreate() {
                           gridTemplateColumns: { xs: "1fr", sm: "1fr 1fr" },
                         }}
                       >
-                        <SourceTile
-                          icon="solar:code-square-linear"
-                          title="Create from repository code"
-                          description="Run alk.yaml to create an isolated temporary agent and remove it after testing."
-                          selected={providerMode === "environment_backed"}
-                          onSelect={() => {
-                            setProviderMode("environment_backed");
-                            setPreflightDirty(Boolean(preflight));
-                          }}
-                        />
+                        {connector !== "retell_chat" && (
+                          <SourceTile
+                            icon="solar:code-square-linear"
+                            title="Create from repository code"
+                            description="Run alk.yaml to create an isolated temporary agent and remove it after testing."
+                            selected={providerMode === "environment_backed"}
+                            onSelect={() => {
+                              setProviderMode("environment_backed");
+                              setPreflightDirty(Boolean(preflight));
+                            }}
+                          />
+                        )}
                         <SourceTile
                           icon="solar:copy-linear"
                           title="Clone and rewire agent ID"
@@ -1296,24 +1336,43 @@ export default function HarnessCreate() {
                       {["connect_only", "provider_import"].includes(
                         providerMode,
                       ) ? (
-                        <TextField
-                          size="small"
-                          label={
-                            connector === "vapi"
-                              ? "Vapi assistant ID"
-                              : "Retell agent ID"
-                          }
-                          value={providerTargetId}
-                          onChange={(event) => {
-                            setProviderTargetId(event.target.value);
-                            setPreflightDirty(Boolean(preflight));
-                          }}
-                          helperText={
-                            providerMode === "provider_import"
-                              ? `ALK clones this target, rewires custom HTTP tools to the uploaded repository environment, and cleans up the clone. Supply the matching ${connector === "vapi" ? "VAPI_API_KEY" : "RETELL_API_KEY"} below.`
-                              : `The matching ${connector === "vapi" ? "VAPI_API_KEY" : "RETELL_API_KEY"} must be supplied below.`
-                          }
-                        />
+                        <Stack spacing={1.5}>
+                          <TextField
+                            size="small"
+                            label={
+                              connector === "vapi"
+                                ? "Vapi assistant ID"
+                                : connector === "retell_chat"
+                                  ? "Retell chat agent ID"
+                                  : "Retell voice agent ID"
+                            }
+                            value={providerTargetId}
+                            onChange={(event) => {
+                              setProviderTargetId(event.target.value);
+                              setPreflightDirty(Boolean(preflight));
+                            }}
+                            helperText={
+                              providerMode === "provider_import"
+                                ? `ALK clones this target, rewires custom HTTP tools to the uploaded repository environment, and cleans up the clone. Supply the matching ${connector === "vapi" ? "VAPI_API_KEY" : "RETELL_API_KEY"} below.`
+                                : `The matching ${connector === "vapi" ? "VAPI_API_KEY" : "RETELL_API_KEY"} must be supplied below.`
+                            }
+                          />
+                          {connector === "retell_chat" && (
+                            <TextField
+                              size="small"
+                              multiline
+                              minRows={3}
+                              label="Dynamic variables (JSON)"
+                              placeholder={'{"customer_name":"Jane Doe"}'}
+                              value={providerDynamicVariables}
+                              onChange={(event) => {
+                                setProviderDynamicVariables(event.target.value);
+                                setPreflightDirty(Boolean(preflight));
+                              }}
+                              helperText="Optional values Retell substitutes into this chat agent for every scenario."
+                            />
+                          )}
+                        </Stack>
                       ) : (
                         <Alert severity="info" variant="outlined">
                           The repository must include alk.yaml with explicit

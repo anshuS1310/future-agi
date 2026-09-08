@@ -70,7 +70,9 @@ class HarnessSourceSerializer(serializers.Serializer):
 
 
 class HarnessAgentSerializer(serializers.Serializer):
-    connector = serializers.ChoiceField(choices=("livekit", "vapi", "retell", "auto"))
+    connector = serializers.ChoiceField(
+        choices=("livekit", "vapi", "retell", "retell_chat", "auto")
+    )
     mode = serializers.ChoiceField(
         choices=("connect_only", "environment_backed", "provider_import"),
         required=False,
@@ -85,12 +87,19 @@ class HarnessAgentSerializer(serializers.Serializer):
         if not isinstance(value, dict):
             raise serializers.ValidationError("config must be an object")
         secret_names = ("token", "secret", "password", "api_key", "private_key")
-        invalid = [
-            str(key)
-            for key, item in value.items()
-            if any(marker in str(key).lower() for marker in secret_names)
-            or not isinstance(item, (str, int, float, bool))
-        ]
+        invalid = []
+        for key, item in value.items():
+            if any(marker in str(key).lower() for marker in secret_names):
+                invalid.append(str(key))
+                continue
+            if key == "dynamic_variables" and isinstance(item, dict):
+                if all(
+                    isinstance(name, str) and isinstance(entry, (str, int, float, bool))
+                    for name, entry in item.items()
+                ):
+                    continue
+            if not isinstance(item, (str, int, float, bool)):
+                invalid.append(str(key))
         if invalid:
             raise serializers.ValidationError(
                 "config must contain scalar non-secret values; use secret_refs"
@@ -121,17 +130,24 @@ class HarnessAgentSerializer(serializers.Serializer):
         connector = attrs["connector"]
         mode = attrs.get("mode")
         config = attrs.get("config") or {}
-        if mode and connector not in {"vapi", "retell"}:
+        provider_connector = "retell" if connector == "retell_chat" else connector
+        if mode and provider_connector not in {"vapi", "retell"}:
             raise serializers.ValidationError(
                 {"mode": "provider mode is supported only for Vapi and Retell"}
             )
         if mode == "connect_only":
-            target_key = "assistant_id" if connector == "vapi" else "agent_id"
+            target_key = "assistant_id" if provider_connector == "vapi" else "agent_id"
             if not str(config.get(target_key) or "").strip():
                 raise serializers.ValidationError(
                     {"config": f"{target_key} is required for connect_only"}
                 )
         if mode == "environment_backed":
+            if connector == "retell_chat":
+                raise serializers.ValidationError(
+                    {
+                        "mode": "native Retell chat supports connect_only and provider_import"
+                    }
+                )
             if "assistant_id" in config or "agent_id" in config:
                 raise serializers.ValidationError(
                     {"config": "the provider target ID is produced by repository code"}
@@ -142,7 +158,7 @@ class HarnessAgentSerializer(serializers.Serializer):
                     {"config": "lifecycle_manifest must be repository-relative"}
                 )
         if mode == "provider_import":
-            target_key = "assistant_id" if connector == "vapi" else "agent_id"
+            target_key = "assistant_id" if provider_connector == "vapi" else "agent_id"
             if not str(config.get(target_key) or "").strip():
                 raise serializers.ValidationError(
                     {"config": f"{target_key} is required for provider_import"}
@@ -292,6 +308,7 @@ CONNECTOR_ALIASES = {
     "livekit": LIVEKIT_ALIASES,
     "vapi": ("VAPI_API_KEY",),
     "retell": ("RETELL_API_KEY",),
+    "retell_chat": ("RETELL_API_KEY",),
 }
 
 

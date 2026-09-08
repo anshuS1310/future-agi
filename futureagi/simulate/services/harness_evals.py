@@ -29,6 +29,9 @@ MOST_SELECTED_EVALS = 8
 _OFFERED_NAME_PREFIX = "customer_agent"
 _OFFERED_FROM_EVAL_ID = 200
 
+# Judge a premise a suite need not contain, so they are never offered.
+_NOT_OFFERED = frozenset({"voice_mail_detection", "voicemail_handling"})
+
 # These have no analogue in a chat transcript.
 _VOICE_ONLY_EVALS = frozenset(
     {
@@ -101,6 +104,8 @@ def offered_evals(organization, workspace, modality: str) -> list[dict[str, Any]
             name.startswith(_OFFERED_NAME_PREFIX)
             or (template.eval_id or 0) >= _OFFERED_FROM_EVAL_ID
         ):
+            continue
+        if name in _NOT_OFFERED:
             continue
         if modality != "voice" and name in _VOICE_ONLY_EVALS:
             continue

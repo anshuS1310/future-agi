@@ -2,15 +2,12 @@ version = 1
 revision = 3
 requires-python = ">=3.11"
 resolution-markers = [
+    "python_full_version >= '4'",
     "python_full_version >= '3.14' and python_full_version < '4'",
     "python_full_version == '3.13.*'",
     "python_full_version == '3.12.*'",
     "python_full_version < '3.12'",
-    "python_full_version >= '4'",
 ]
-
-[options]
-prerelease-mode = "if-necessary"
 
 [[package]]
 name = "absl-py"
@@ -1213,6 +1210,7 @@ dependencies = [
     { name = "google-genai" },
     { name = "granian", extra = ["reload", "uvloop"] },
     { name = "hdbscan" },
+    { name = "httpx-ws" },
     { name = "jinja2" },
     { name = "json-repair" },
     { name = "jsonpath-ng" },
@@ -1309,6 +1307,7 @@ dependencies = [
     { name = "traceai-openai" },
     { name = "traceai-vertexai" },
     { name = "transformers" },
+    { name = "urllib3" },
     { name = "watchdog" },
     { name = "watchfiles" },
     { name = "weaviate-client" },
@@ -1386,6 +1385,7 @@ requires-dist = [
     { name = "grpcio", marker = "extra == 'dev'" },
     { name = "grpcio-tools", marker = "extra == 'dev'" },
     { name = "hdbscan" },
+    { name = "httpx-ws", specifier = "==0.7.2" },
     { name = "jinja2" },
     { name = "json-repair" },
     { name = "jsonpath-ng" },
@@ -1487,6 +1487,7 @@ requires-dist = [
     { name = "types-pyyaml", marker = "extra == 'dev'" },
     { name = "types-redis", marker = "extra == 'dev'" },
     { name = "types-requests", marker = "extra == 'dev'" },
+    { name = "urllib3", specifier = ">=2.1,<3" },
     { name = "watchdog" },
     { name = "watchfiles" },
     { name = "weaviate-client" },
@@ -1709,37 +1710,37 @@ wheels = [
 
 [package.optional-dependencies]
 cublas = [
-    { name = "nvidia-cublas", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "nvidia-cublas" },
 ]
 cudart = [
-    { name = "nvidia-cuda-runtime", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "nvidia-cuda-runtime" },
 ]
 cufft = [
-    { name = "nvidia-cufft", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "nvidia-cufft" },
 ]
 cufile = [
-    { name = "nvidia-cufile", marker = "sys_platform == 'linux'" },
+    { name = "nvidia-cufile" },
 ]
 cupti = [
-    { name = "nvidia-cuda-cupti", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "nvidia-cuda-cupti" },
 ]
 curand = [
-    { name = "nvidia-curand", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "nvidia-curand" },
 ]
 cusolver = [
-    { name = "nvidia-cusolver", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "nvidia-cusolver" },
 ]
 cusparse = [
-    { name = "nvidia-cusparse", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "nvidia-cusparse" },
 ]
 nvjitlink = [
-    { name = "nvidia-nvjitlink", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "nvidia-nvjitlink" },
 ]
 nvrtc = [
-    { name = "nvidia-cuda-nvrtc", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "nvidia-cuda-nvrtc" },
 ]
 nvtx = [
-    { name = "nvidia-nvtx", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "nvidia-nvtx" },
 ]
 
 [[package]]
@@ -3290,7 +3291,7 @@ wheels = [
 
 [[package]]
 name = "httpx-ws"
-version = "0.9.0"
+version = "0.7.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -3298,9 +3299,9 @@ dependencies = [
     { name = "httpx" },
     { name = "wsproto" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/cd/cd/ca91a07ae446451f7476bf3fcc909e98cb942ff032ebfda0e3fe449aca7b/httpx_ws-0.9.0.tar.gz", hash = "sha256:797373326f70eec1ae96f6e43ae9f12002fd7d73aee139a4985eaab964338a08", size = 107105, upload-time = "2026-03-28T14:11:10.781Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/56/ba/e310ccdb8f18a2b894bfacd085ef390cf6cc70bb10ff9f109d58d94f6b47/httpx_ws-0.7.2.tar.gz", hash = "sha256:93edea6c8fc313464fc287bff7d2ad20e6196b7754c76f946f73b4af79886d4e", size = 24513, upload-time = "2025-03-28T13:20:03.039Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/98/f8/a6bc80313a9e93c888fa10534dfce2ad76ff86911b6f485777ce6de6a073/httpx_ws-0.9.0-py3-none-any.whl", hash = "sha256:71640d2fb1bf9a225775015b33cd755cfd4c5f7e21c885192fe3adc4c387b248", size = 15759, upload-time = "2026-03-28T14:11:11.887Z" },
+    { url = "https://files.pythonhosted.org/packages/03/3d/2113a5c7af9a13663fa026882d0302ed4142960388536f885dacd6be7038/httpx_ws-0.7.2-py3-none-any.whl", hash = "sha256:dd7bf9dbaa96dcd5cef1af3a7e1130cfac068bebecce25a74145022f5a8427a3", size = 14424, upload-time = "2025-03-28T13:20:04.238Z" },
 ]
 
 [[package]]
@@ -8138,8 +8139,8 @@ name = "standard-aifc"
 version = "3.13.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "audioop-lts", marker = "python_full_version >= '3.13'" },
-    { name = "standard-chunk", marker = "python_full_version >= '3.13'" },
+    { name = "audioop-lts" },
+    { name = "standard-chunk" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/c4/53/6050dc3dde1671eb3db592c13b55a8005e5040131f7509cef0215212cb84/standard_aifc-3.13.0.tar.gz", hash = "sha256:64e249c7cb4b3daf2fdba4e95721f811bde8bdfc43ad9f936589b7bb2fae2e43", size = 15240, upload-time = "2024-10-30T16:01:31.772Z" }
 wheels = [
@@ -8160,7 +8161,7 @@ name = "standard-sunau"
 version = "3.13.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "audioop-lts", marker = "python_full_version >= '3.13'" },
+    { name = "audioop-lts" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/66/e3/ce8d38cb2d70e05ffeddc28bb09bad77cfef979eb0a299c9117f7ed4e6a9/standard_sunau-3.13.0.tar.gz", hash = "sha256:b319a1ac95a09a2378a8442f403c66f4fd4b36616d6df6ae82b8e536ee790908", size = 9368, upload-time = "2024-10-30T16:01:41.626Z" }
 wheels = [

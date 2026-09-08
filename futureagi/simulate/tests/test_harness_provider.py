@@ -196,6 +196,25 @@ def test_daytona_preflight_reports_missing_target_credentials_instead_of_rejecti
     assert ready.data["credentials"]["credential_choices"][0]["satisfied"] is True
 
 
+def test_auto_source_submission_does_not_require_unrelated_voice_credentials():
+    payload = _v1_payload()
+    payload["agent"] = {"connector": "auto", "config": {}, "secret_refs": {}}
+
+    serializer = HarnessJobCreateSerializer(data=payload)
+
+    assert serializer.is_valid(), serializer.errors
+
+
+def test_explicit_livekit_submission_still_requires_target_credentials():
+    payload = _v1_payload()
+    payload["agent"] = {"connector": "livekit", "config": {}, "secret_refs": {}}
+
+    serializer = HarnessJobCreateSerializer(data=payload)
+
+    assert not serializer.is_valid()
+    assert "LIVEKIT_URL" in str(serializer.errors)
+
+
 @pytest.mark.django_db
 def test_daytona_create_rejects_known_egress_overflow_before_persisting(
     user, workspace, settings

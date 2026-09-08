@@ -298,8 +298,11 @@ CONNECTOR_ALIASES = {
 def missing_provider_credentials(agent):
     """Aliases the connector needs that the job does not carry.
 
-    Mirrors the gateway's connector resolution: ``auto`` is satisfied by any one complete
-    provider family, and ``LIVEKIT_URL`` may also be pinned as ``config.livekit_url``.
+    ``auto`` is deliberately unresolved at admission time: fresh authoring may discover a chat
+    target that needs no voice-provider credential at all. Requiring an arbitrary provider family
+    here both rejects valid chat repositories and leaks unrelated credentials into their target
+    processes. Concrete connectors still fail fast, and an authored voice contract without its
+    required target credentials fails at the connector-resolution boundary.
     """
     present = {str(name).upper() for name in (agent.get("secret_refs") or {})}
     config = agent.get("config") or {}
@@ -307,14 +310,7 @@ def missing_provider_credentials(agent):
         present.add("LIVEKIT_URL")
     connector = agent["connector"]
     if connector == "auto":
-        if any(
-            all(alias in present for alias in aliases)
-            for aliases in CONNECTOR_ALIASES.values()
-        ):
-            return []
-        return ["one complete provider family: " + " | ".join(
-            "+".join(aliases) for aliases in CONNECTOR_ALIASES.values()
-        )]
+        return []
     return [alias for alias in CONNECTOR_ALIASES[connector] if alias not in present]
 
 

@@ -24,8 +24,6 @@ import requests
 from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
-from tfc.settings.settings import UPLOAD_BUCKET_NAME
-from tfc.utils.storage_client import ensure_bucket, get_storage_client
 
 from simulate.models import (
     HostedHarnessAttempt,
@@ -38,6 +36,8 @@ from simulate.services.hosted_harness import (
     register_attempt,
     request_cancellation,
 )
+from tfc.settings.settings import UPLOAD_BUCKET_NAME
+from tfc.utils.storage_client import ensure_bucket, get_storage_client
 
 logger = logging.getLogger("simulate.hosted_harness_gateway")
 
@@ -292,7 +292,9 @@ def _extend_command_for(job: HostedHarnessJob, payload: dict) -> str | None:
     target_count = extend.get("target_count")
     if not target_count:
         return None
-    guidance = [str(item) for item in (extend.get("guidance") or []) if str(item).strip()]
+    guidance = [
+        str(item) for item in (extend.get("guidance") or []) if str(item).strip()
+    ]
     name = str(
         (payload.get("metadata") or {}).get("agent_name")
         or payload.get("name")
@@ -1711,13 +1713,30 @@ class DaytonaHostedGateway:
             attempt.heartbeat_at = timezone.now()
             attempt.save(update_fields=["state", "heartbeat_at", "updated_at"])
             return attempt
-        except Exception:
+        except Exception as exc:
+            provider_status_code = getattr(exc, "status_code", None)
+            provider_reason = None
+            provider_message = str(exc).lower()
+            if (
+                "organization is suspended" in provider_message
+                and "depleted credits" in provider_message
+            ):
+                provider_reason = "organization_suspended_depleted_credits"
+            details = {
+                "provider": "daytona",
+                "exception_type": type(exc).__name__,
+            }
+            if isinstance(provider_status_code, int):
+                details["provider_status_code"] = provider_status_code
+            if provider_reason:
+                details["provider_reason"] = provider_reason
             attempt.terminal_stage = "failed"
             attempt.terminal_failure = {
                 "domain": "infrastructure",
                 "stage": "queued",
                 "code": "sandbox_launch_failed",
                 "message": "sandbox failed before the guest entrypoint started",
+                "details": details,
             }
             attempt.state = HostedHarnessAttempt.State.FAILED
             attempt.save(
@@ -1728,16 +1747,35 @@ class DaytonaHostedGateway:
                     "updated_at",
                 ]
             )
+            # A provider 4xx is an account/request policy decision, not transient
+            # infrastructure. Retrying the identical launch only delays the useful diagnosis.
+            # Timeouts, transport errors, rate limits, and provider 5xx responses remain eligible
+            # for the job's bounded durable retry policy.
+            provider_rejects_retry = (
+                isinstance(provider_status_code, int)
+                and 400 <= provider_status_code < 500
+                and provider_status_code not in {408, 429}
+            )
+            retry_pending = not provider_rejects_retry and self._should_retry(
+                attempt, "infrastructure"
+            )
             if sandbox is None:
-                record_cleanup(
+                job = record_cleanup(
                     attempt.id,
                     provider_ref="",
                     verified_absent=True,
+                    retry_pending=retry_pending,
                     details={"provider": "daytona", "sandbox_created": False},
                 )
             else:
-                self._delete_and_record(attempt)
-            raise
+                job = self._delete_and_record(attempt, retry_pending=retry_pending)
+            # Launch failures are part of the same durable retry protocol as guest crashes.
+            # Returning the recorded attempt lets the workflow observe RETRY_WAIT and create a
+            # genuinely fresh attempt after its configured backoff.  Raising here delegates to
+            # Temporal's activity retry, which can rerun launch after the first attempt has
+            # already been marked terminal and leave the job in a poisoned state.
+            attempt.job = job
+            return attempt
 
     def inspect(self, attempt: HostedHarnessAttempt) -> dict[str, Any]:
         sandbox = self.client.get(str(attempt.provider_ref))
@@ -2133,6 +2171,25 @@ class DaytonaHostedGateway:
         self, attempt: HostedHarnessAttempt
     ) -> HostedHarnessJob | None:
         from daytona import DaytonaNotFoundError
+
+        # ``launch`` can fail before Daytona returns a sandbox id.  That path has already
+        # recorded cleanup and projected the job into RETRY_WAIT (or terminal FAILED when the
+        # attempt budget is exhausted).  The workflow deliberately polls the returned attempt
+        # once to learn that durable state; do not try ``client.get("")`` and replace the useful
+        # ``sandbox_launch_failed`` diagnosis with a misleading ``sandbox_disappeared`` error.
+        attempt.refresh_from_db()
+        job = attempt.job
+        job.refresh_from_db()
+        if (
+            not attempt.provider_ref
+            and attempt.state == HostedHarnessAttempt.State.FAILED
+        ):
+            if job.state in {
+                HostedHarnessJob.State.RETRY_WAIT,
+                HostedHarnessJob.State.FAILED,
+                HostedHarnessJob.State.CANCELED,
+            }:
+                return job
 
         try:
             observation = self.inspect(attempt)

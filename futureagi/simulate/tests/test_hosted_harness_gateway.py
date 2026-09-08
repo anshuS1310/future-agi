@@ -228,6 +228,7 @@ def test_normalize_egress_domains_wildcard_coverage_keeps_apex():
 def test_provider_egress_includes_direct_and_simulator_aliases(alias, domain):
     assert _provider_egress_domains({alias: "configured"}) == {domain}
 
+
 def test_provider_egress_uses_selected_simulator_audio_provider():
     domains = _provider_egress_domains(
         {
@@ -365,7 +366,9 @@ def test_retell_job_allowlists_platform_simulator_livekit_signaling_and_turn(set
     }
 
 
-def test_livekit_job_does_not_spend_egress_slots_on_platform_simulator_livekit(settings):
+def test_livekit_job_does_not_spend_egress_slots_on_platform_simulator_livekit(
+    settings,
+):
     settings.ALK_HOSTED_BASE_EGRESS_DOMAINS = []
     payload = {
         "agent": {"connector": "livekit", "config": {}},
@@ -720,6 +723,98 @@ class _Daytona:
         self.deleted = True
 
 
+class _FailingDaytonaCreate(_Daytona):
+    def create(self, params, **kwargs):
+        self.params = params
+        raise TimeoutError("sandbox create timed out")
+
+
+class _ForbiddenDaytonaCreate(_Daytona):
+    def create(self, params, **kwargs):
+        self.params = params
+        error = RuntimeError(
+            "Failed to create sandbox: Organization is suspended: Depleted credits"
+        )
+        error.status_code = 403
+        raise error
+
+
+@pytest.mark.django_db
+def test_daytona_launch_failure_enters_durable_retry_wait(organization):
+    payload = _payload()
+    payload["source"] = {
+        "kind": "remote",
+        "endpoint": "https://agent.example.com",
+        "visibility": "public",
+    }
+    job, _ = create_hosted_job(
+        organization, payload, idempotency_key="launch-timeout-retry"
+    )
+    gateway = object.__new__(DaytonaHostedGateway)
+    gateway.client = _FailingDaytonaCreate()
+    gateway.snapshot = "alk-hosted-v1"
+    gateway.snapshot_digest = ""
+
+    with patch(
+        "simulate.services.hosted_harness_gateway.HostedSourceAcquirer.acquire",
+        return_value=(b"archive", ""),
+    ):
+        attempt = gateway.launch(job, endpoint_base_url="https://platform.example.com")
+
+    attempt.refresh_from_db()
+    job.refresh_from_db()
+    assert attempt.state == HostedHarnessAttempt.State.FAILED
+    assert attempt.cleanup_verified_at is not None
+    assert attempt.terminal_failure["code"] == "sandbox_launch_failed"
+    assert attempt.terminal_failure["details"]["exception_type"] == "TimeoutError"
+    assert job.state == HostedHarnessJob.State.RETRY_WAIT
+
+    # The Temporal workflow polls the attempt returned by launch once to discover whether it
+    # should relaunch.  A pre-create failure has no provider_ref, so reconciliation must return
+    # the durable retry state without attempting a lookup for an empty sandbox id or overwriting
+    # the original failure as ``sandbox_disappeared``.
+    reconciled = gateway.reconcile_completed(attempt)
+    attempt.refresh_from_db()
+    assert reconciled.state == HostedHarnessJob.State.RETRY_WAIT
+    assert attempt.terminal_failure["code"] == "sandbox_launch_failed"
+
+
+@pytest.mark.django_db
+def test_daytona_permanent_provider_rejection_fails_without_retry(organization):
+    payload = _payload()
+    payload["source"] = {
+        "kind": "remote",
+        "endpoint": "https://agent.example.com",
+        "visibility": "public",
+    }
+    job, _ = create_hosted_job(
+        organization, payload, idempotency_key="launch-provider-rejection"
+    )
+    gateway = object.__new__(DaytonaHostedGateway)
+    gateway.client = _ForbiddenDaytonaCreate()
+    gateway.snapshot = "alk-hosted-v1"
+    gateway.snapshot_digest = ""
+
+    with patch(
+        "simulate.services.hosted_harness_gateway.HostedSourceAcquirer.acquire",
+        return_value=(b"archive", ""),
+    ):
+        attempt = gateway.launch(job, endpoint_base_url="https://platform.example.com")
+
+    attempt.refresh_from_db()
+    job.refresh_from_db()
+    assert attempt.state == HostedHarnessAttempt.State.FAILED
+    assert attempt.cleanup_verified_at is not None
+    assert attempt.terminal_failure["details"] == {
+        "provider": "daytona",
+        "exception_type": "RuntimeError",
+        "provider_status_code": 403,
+        "provider_reason": "organization_suspended_depleted_credits",
+    }
+    assert job.state == HostedHarnessJob.State.FAILED
+    assert job.attempts.count() == 1
+
+
 @pytest.mark.django_db
 def test_daytona_launch_uploads_contract_files_and_starts_one_session(
     organization, settings, monkeypatch
@@ -850,7 +945,10 @@ def test_unified_provider_import_authoring_receives_one_shot_target_key(
     assert f"--target-secrets {one_shot_path}" in command
     assert "--provider-profile-cache /work/provider-import-profile.json" in command
     assert "retell-target-secret" not in command
-    assert "must-not-enter-authoring-file" not in client.sandbox.fs.uploads[one_shot_path].decode()
+    assert (
+        "must-not-enter-authoring-file"
+        not in client.sandbox.fs.uploads[one_shot_path].decode()
+    )
     assert one_shot_path in client.sandbox.process.exec_calls[0]
 
 
@@ -1144,7 +1242,9 @@ def test_reconcile_relaunches_infra_failure_until_budget_then_fails(
 
 @pytest.mark.django_db
 @pytest.mark.parametrize("exit_code", [0, 3, 78])
-def test_reconcile_terminal_and_authoring_exits_never_retry(organization, monkeypatch, exit_code):
+def test_reconcile_terminal_and_authoring_exits_never_retry(
+    organization, monkeypatch, exit_code
+):
     from simulate.services.hosted_harness import record_cleanup
 
     payload = _payload()
@@ -1178,7 +1278,9 @@ def test_reconcile_terminal_and_authoring_exits_never_retry(organization, monkey
 
     with acquire:
         attempt = gateway.launch(job, endpoint_base_url="https://platform.example.com")
-    monkeypatch.setattr(gateway, "inspect", lambda _: {"exit_code": exit_code, "logs": ""})
+    monkeypatch.setattr(
+        gateway, "inspect", lambda _: {"exit_code": exit_code, "logs": ""}
+    )
     assert gateway.reconcile_completed(attempt).state != (
         HostedHarnessJob.State.RETRY_WAIT
     )

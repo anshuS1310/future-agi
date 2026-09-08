@@ -35347,6 +35347,7 @@ export const simulateApiHarnessJobsPreflightBodyArtifactsMaxArtifactBytesMin = 0
 export const simulateApiHarnessJobsPreflightBodyPlatformRunIdMax = 255;
 
 export const simulateApiHarnessJobsPreflightBodyMetadataDefault = {};
+export const simulateApiHarnessJobsPreflightBodyCredentialValuesMaxOne = 4096;
 
 export const SimulateApiHarnessJobsPreflightBody = zod.object({
   schema_version: zod
@@ -35557,6 +35558,17 @@ export const SimulateApiHarnessJobsPreflightBody = zod.object({
   metadata: zod
     .record(zod.string(), zod.string())
     .default(simulateApiHarnessJobsPreflightBodyMetadataDefault),
+  credential_values: zod
+    .record(
+      zod.string(),
+      zod
+        .string()
+        .max(simulateApiHarnessJobsPreflightBodyCredentialValuesMaxOne),
+    )
+    .optional()
+    .describe(
+      "Target-provider values to verify live; used for this check only.",
+    ),
 });
 
 /**

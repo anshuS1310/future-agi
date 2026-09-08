@@ -17157,6 +17157,11 @@ export const HarnessPreflightApiSchemaVersion = {
 
 export type HarnessPreflightApiMetadata = { [key: string]: string };
 
+/**
+ * Target-provider values to verify live; used for this check only.
+ */
+export type HarnessPreflightApiCredentialValues = { [key: string]: string };
+
 export interface HarnessPreflightApi {
   schema_version?: HarnessPreflightApiSchemaVersion;
   run_id?: string;
@@ -17178,6 +17183,8 @@ export interface HarnessPreflightApi {
    */
   platform_run_id?: string;
   metadata?: HarnessPreflightApiMetadata;
+  /** Target-provider values to verify live; used for this check only. */
+  credential_values?: HarnessPreflightApiCredentialValues;
 }
 
 export interface HarnessSecretFileUploadResponseApi {

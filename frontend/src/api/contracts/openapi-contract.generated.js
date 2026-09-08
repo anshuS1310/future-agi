@@ -58875,6 +58875,16 @@ export const OPENAPI_CONTRACT = Object.freeze({
           },
           default: {},
         },
+        credential_values: {
+          title: "Credential values",
+          description:
+            "Target-provider values to verify live; used for this check only.",
+          type: "object",
+          additionalProperties: {
+            type: "string",
+            maxLength: 4096,
+          },
+        },
       },
     },
     HarnessResultReceipt: {

@@ -93,6 +93,13 @@ export const canStartEndToEndRun = ({
   uploadingSecretFile,
 }) => hasSource && !submitting && !checking && !uploadingSecretFile;
 
+// Blank, whitespace and 0 all mean "leave it alone": the run keeps whatever the contract derived,
+// so an agent whose calls are legitimately long is not silently held to a shorter default.
+export const callLimitConfig = (value) =>
+  String(value ?? "").trim() && Number(value) > 0
+    ? { voice_call_timeout_seconds: Number(value) }
+    : {};
+
 function Section({ title, description, children }) {
   return (
     <Paper variant="outlined" sx={{ p: 2 }}>
@@ -310,10 +317,7 @@ export default function HarnessCreate() {
         : {}),
       config: {
         ...configurationValues,
-        ...(String(callTimeoutSeconds).trim() &&
-        Number(callTimeoutSeconds) > 0
-          ? { voice_call_timeout_seconds: Number(callTimeoutSeconds) }
-          : {}),
+        ...callLimitConfig(callTimeoutSeconds),
         ...(connector === "vapi" && providerMode === "connect_only"
           ? { assistant_id: providerTargetId.trim() }
           : {}),

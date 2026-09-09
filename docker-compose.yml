@@ -373,6 +373,11 @@ services:
       ALK_SIM_SLOT_LEASE_SCRIPT: ${ALK_SIM_SLOT_LEASE_SCRIPT:-}
       TEMPORAL_MAX_CONCURRENT_ACTIVITIES: ${ALK_RUNNER_MAX_CONCURRENCY:-4}
       TEMPORAL_MAX_CONCURRENT_WORKFLOW_TASKS: ${TEMPORAL_SIMRUNNER_MAX_WORKFLOWS:-8}
+      # A stop must let a phone call in flight finish: the worker drains for
+      # this long, and stop_grace_period below must exceed it, or Docker
+      # force-kills the child mid-call and the leased number stays taken until
+      # its TTL. Raise both together for long phone runs (the prod chart: 4200).
+      TEMPORAL_GRACEFUL_SHUTDOWN_TIMEOUT: ${SIMULATION_RUNNER_GRACEFUL_SHUTDOWN_TIMEOUT:-300}
       # Absolute so the SDK child (runs from a mkdtemp cwd) resolves the key.
       GOOGLE_APPLICATION_CREDENTIALS: /app/backend/Vertex_AI_Creds.json
       # gemini-3.1 is 404 in regional endpoints; only served on `global`.
@@ -385,6 +390,7 @@ services:
       # (_voice_simulator_config): English -> Deepgram aura-2-andromeda-en,
       # other/unknown -> streaming Gemini (multilingual). Set
       # SIMULATOR_TTS_PROVIDER / SIMULATOR_TTS_MODEL here to force one engine.
+    stop_grace_period: ${SIMULATION_RUNNER_STOP_GRACE_PERIOD:-330s}
     volumes:
       # Runner image lacks the key (only the backend image has it); mount it.
       - ${GOOGLE_APPLICATION_CREDENTIALS:-/dev/null}:/app/backend/Vertex_AI_Creds.json:ro

@@ -433,6 +433,27 @@ export interface UserChecksResponseApi {
   result: UserChecksResultApi;
 }
 
+export interface GCPMarketplaceSignupRequestApi {
+  /** @minLength 1 */
+  onboarding_token: string;
+  /** @minLength 1 */
+  email: string;
+  /** @minLength 1 */
+  full_name: string;
+}
+
+export interface GCPMarketplaceSignupResultApi {
+  /** @minLength 1 */
+  message: string;
+  /** @minLength 1 */
+  user_email: string;
+}
+
+export interface GCPMarketplaceSignupResponseApi {
+  status: boolean;
+  result: GCPMarketplaceSignupResultApi;
+}
+
 export interface AccountsUserProfileResponseApi {
   name: string;
   /** @minLength 1 */
@@ -26743,6 +26764,8 @@ export interface UsagePlansAndAddonsResultApi {
   pricing: UsagePlansAndAddonsResultApiPricing;
   isCustomPricing: boolean;
   customDetails?: UsageCustomPlanDetailsApi;
+  plan_change_locked?: boolean;
+  plan_change_locked_reason?: string;
   pending_cancel: boolean;
   /** @minLength 1 */
   cancel_at?: string;
@@ -27121,6 +27144,10 @@ export type AccountsAwsMarketplaceVerifyTokenCreateBody = {
   "x-amzn-marketplace-token": string;
   "x-amzn-marketplace-product-id"?: string;
   "x-amzn-marketplace-agreement-id"?: string;
+};
+
+export type AccountsGcpMarketplaceVerifyTokenCreateBody = {
+  "x-gcp-marketplace-token": string;
 };
 
 export type AccountsOrganizationMembersListParams = {
@@ -29306,18 +29333,22 @@ export type Saml2AuthAcsCreateBodyTwo = {
 
 export type Saml2AuthAuthCallbackListParams = {
   code?: string;
+  state?: string;
 };
 
 export type Saml2AuthAuthReadParams = {
   code?: string;
+  state?: string;
 };
 
 export type Saml2AuthGithubCallbackListParams = {
   code?: string;
+  state?: string;
 };
 
 export type Saml2AuthGithubReadParams = {
   code?: string;
+  state?: string;
 };
 
 export type Saml2AuthIdpLoginListParams = {
@@ -29385,6 +29416,7 @@ export type Saml2AuthIdpUploadsUpdateBodyTwo = {
 
 export type Saml2AuthLoginListParams = {
   provider: Saml2AuthLoginListProvider;
+  onboarding_token?: string;
 };
 
 export type Saml2AuthLoginListProvider =
@@ -29398,6 +29430,7 @@ export const Saml2AuthLoginListProvider = {
 
 export type Saml2AuthReadParams = {
   provider: Saml2AuthReadProvider;
+  onboarding_token?: string;
 };
 
 export type Saml2AuthReadProvider =
@@ -29411,10 +29444,12 @@ export const Saml2AuthReadProvider = {
 
 export type Saml2AuthMicrosoftCallbackListParams = {
   code?: string;
+  state?: string;
 };
 
 export type Saml2AuthMicrosoftReadParams = {
   code?: string;
+  state?: string;
 };
 
 export type SdkApiV1EvaluatePipelineListParams = {

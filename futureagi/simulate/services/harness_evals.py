@@ -15,6 +15,7 @@ from typing import Any
 
 import structlog
 from django.conf import settings
+from django.apps import apps
 from django.db.models import Q
 
 from model_hub.models.evals_metric import EvalTemplate
@@ -31,13 +32,18 @@ MOST_SELECTED_EVALS = 8
 # The evals the harness may offer, defined in one file a human owns. Absent means never offered,
 # whatever exists in the database; an entry with "visible": false is withheld on purpose and stays
 # in the file so the decision is legible. This is not EvalTemplate.visible_ui.
-HARNESS_EVALS_MANIFEST = Path(__file__).resolve().parent.parent / "harness_evals.json"
+MANIFEST_FILENAME = "harness_evals.json"
+
+
+def harness_evals_manifest() -> Path:
+    """The manifest inside this app, located the way Django locates anything in an app."""
+    return Path(apps.get_app_config("simulate").path) / "data" / MANIFEST_FILENAME
 
 
 @lru_cache(maxsize=1)
 def offerable_eval_names() -> frozenset[str]:
     """Manifest names marked offerable. Read once per process; the file ships with the code."""
-    body = json.loads(HARNESS_EVALS_MANIFEST.read_text(encoding="utf-8"))
+    body = json.loads(harness_evals_manifest().read_text(encoding="utf-8"))
     return frozenset(
         str(entry["name"]) for entry in body["evals"] if entry.get("visible") is True
     )

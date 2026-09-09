@@ -148,9 +148,9 @@ def test_the_manifest_decides_three_ways(organization, workspace):
     """
     import json
 
-    from simulate.services.harness_evals import HARNESS_EVALS_MANIFEST
+    from simulate.services.harness_evals import harness_evals_manifest
 
-    body = json.loads(HARNESS_EVALS_MANIFEST.read_text(encoding="utf-8"))
+    body = json.loads(harness_evals_manifest().read_text(encoding="utf-8"))
     by_name = {entry["name"]: entry for entry in body["evals"]}
 
     assert by_name["customer_agent_query_handling"]["visible"] is True
@@ -492,3 +492,21 @@ def test_a_template_with_no_model_still_gets_one(organization, workspace):
     )
     assert configs, "the template is mappable, so it must produce a config"
     assert configs[0].model == FALLBACK_EVAL_MODEL
+
+
+def test_every_manifest_name_is_a_real_eval_definition():
+    """A typo in the manifest drops an eval silently, since a name matching no template just never
+    appears in the catalogue."""
+    import json
+    from pathlib import Path as _Path
+
+    from simulate.services.harness_evals import harness_evals_manifest
+
+    root = _Path(__file__).resolve().parents[2] / "model_hub" / "system_evals"
+    defined = {path.stem for path in root.rglob("*.yaml")}
+    manifest = json.loads(harness_evals_manifest().read_text(encoding="utf-8"))
+    entries = manifest["evals"] if isinstance(manifest, dict) else manifest
+    named = {str(entry["name"]) for entry in entries}
+
+    missing = sorted(named - defined)
+    assert not missing, f"manifest names with no YAML definition: {missing}"

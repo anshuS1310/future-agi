@@ -117608,7 +117608,8 @@
                     "enum": [
                         "github",
                         "archive",
-                        "remote"
+                        "remote",
+                        "provider"
                     ]
                 },
                 "repository": {
@@ -117716,6 +117717,7 @@
                         "livekit",
                         "vapi",
                         "retell",
+                        "retell_chat",
                         "auto"
                     ]
                 },
@@ -117940,7 +117942,6 @@
         },
         "HarnessJobCreate": {
             "required": [
-                "source",
                 "agent",
                 "artifacts"
             ],
@@ -118009,7 +118010,6 @@
         },
         "HarnessPreflight": {
             "required": [
-                "source",
                 "agent",
                 "artifacts"
             ],
@@ -118596,6 +118596,13 @@
                         "minLength": 1
                     },
                     "default": []
+                },
+                "stop_reason": {
+                    "title": "Stop reason",
+                    "type": "string",
+                    "maxLength": 128,
+                    "minLength": 1,
+                    "x-nullable": true
                 }
             },
             "x-nullable": true

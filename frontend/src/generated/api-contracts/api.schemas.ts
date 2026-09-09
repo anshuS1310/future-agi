@@ -16929,6 +16929,7 @@ export const HarnessSourceApiKind = {
   github: "github",
   archive: "archive",
   remote: "remote",
+  provider: "provider",
 } as const;
 
 export type HarnessSourceApiVisibility =
@@ -16974,6 +16975,7 @@ export const HarnessAgentApiConnector = {
   livekit: "livekit",
   vapi: "vapi",
   retell: "retell",
+  retell_chat: "retell_chat",
   auto: "auto",
 } as const;
 
@@ -17128,7 +17130,7 @@ export interface HarnessArtifactApi {
 export interface HarnessJobCreateApi {
   schema_version?: HarnessJobCreateApiSchemaVersion;
   run_id?: string;
-  source: HarnessSourceApi;
+  source?: HarnessSourceApi;
   agent: HarnessAgentApi;
   /**
    * @minimum 1
@@ -17165,7 +17167,7 @@ export type HarnessPreflightApiCredentialValues = { [key: string]: string };
 export interface HarnessPreflightApi {
   schema_version?: HarnessPreflightApiSchemaVersion;
   run_id?: string;
-  source: HarnessSourceApi;
+  source?: HarnessSourceApi;
   agent: HarnessAgentApi;
   /**
    * @minimum 1
@@ -17436,6 +17438,11 @@ export interface HarnessCallApi {
    */
   transcript_artifact?: string;
   recording_artifacts?: string[];
+  /**
+   * @minLength 1
+   * @maxLength 128
+   */
+  stop_reason?: string;
 }
 
 export type HarnessFailureApiDomain =

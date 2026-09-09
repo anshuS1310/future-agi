@@ -58628,7 +58628,7 @@ export const OPENAPI_CONTRACT = Object.freeze({
       },
     },
     HarnessJobCreate: {
-      required: ["source", "agent", "artifacts"],
+      required: ["agent", "artifacts"],
       type: "object",
       properties: {
         schema_version: {
@@ -58815,7 +58815,7 @@ export const OPENAPI_CONTRACT = Object.freeze({
       },
     },
     HarnessPreflight: {
-      required: ["source", "agent", "artifacts"],
+      required: ["agent", "artifacts"],
       type: "object",
       properties: {
         schema_version: {
@@ -84638,7 +84638,7 @@ export const OPENAPI_CONTRACT = Object.freeze({
         connector: {
           title: "Connector",
           type: "string",
-          enum: ["livekit", "vapi", "retell", "auto"],
+          enum: ["livekit", "vapi", "retell", "retell_chat", "auto"],
         },
         mode: {
           title: "Mode",
@@ -84841,7 +84841,7 @@ export const OPENAPI_CONTRACT = Object.freeze({
         kind: {
           title: "Kind",
           type: "string",
-          enum: ["github", "archive", "remote"],
+          enum: ["github", "archive", "remote", "provider"],
         },
         repository: {
           title: "Repository",
@@ -85206,6 +85206,13 @@ export const OPENAPI_CONTRACT = Object.freeze({
             minLength: 1,
           },
           default: [],
+        },
+        stop_reason: {
+          title: "Stop reason",
+          type: "string",
+          maxLength: 128,
+          minLength: 1,
+          "x-nullable": true,
         },
       },
       "x-nullable": true,

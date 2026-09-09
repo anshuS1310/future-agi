@@ -365,7 +365,10 @@ def _preflight_source_connectors(request, payload):
         detect_source_credentials,
     )
 
-    if payload["source"]["kind"] == "remote":
+    # Remote/provider targets have no source tree to acquire. Provider metadata
+    # is checked through its authenticated target lookup below, not by invoking
+    # the repository source scanner with a synthetic source.
+    if payload["source"]["kind"] in {"remote", "provider"}:
         return [], [], 0
     probe = HostedHarnessJob(organization=_organization(request), payload=payload)
     archive, _commit = HostedSourceAcquirer().acquire(probe)
@@ -402,7 +405,10 @@ def _preflight_credential_probe(payload) -> list[dict[str, Any]]:
     Values arrive only through the write-only ``credential_values`` preflight field; a
     LiveKit URL entered as public config counts toward that family. Nothing is stored.
     """
-    from simulate.services.harness_credential_probes import probe_all
+    from simulate.services.harness_credential_probes import (
+        probe_all,
+        probe_provider_target,
+    )
 
     if payload["source"]["kind"] == "remote":
         return []
@@ -414,7 +420,20 @@ def _preflight_credential_probe(payload) -> list[dict[str, Any]]:
     livekit_url = config.get("livekit_url") or config.get("LIVEKIT_URL")
     if livekit_url and not values.get("LIVEKIT_URL"):
         values["LIVEKIT_URL"] = str(livekit_url)
-    return [result.as_dict() for result in probe_all(values)]
+    results = list(probe_all(values))
+    agent = payload["agent"]
+    connector = str(agent.get("connector") or "").strip().lower()
+    mode = str(agent.get("mode") or "").strip().lower()
+    if mode in {"connect_only", "provider_import"}:
+        target_field = "assistant_id" if connector == "vapi" else "agent_id"
+        target = probe_provider_target(
+            connector,
+            (agent.get("config") or {}).get(target_field),
+            values,
+        )
+        if target is not None:
+            results.append(target)
+    return [result.as_dict() for result in results]
 
 
 class DaytonaHarnessProvider:

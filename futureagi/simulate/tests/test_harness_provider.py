@@ -419,6 +419,63 @@ def test_provider_connection_value_satisfies_preflight_without_extra_env_source(
     assert serializer.validated_data["source"]["kind"] == "provider"
 
 
+def test_preflight_rejects_unknown_provider_target_before_run(settings):
+    settings.ALK_HOSTED_BASE_EGRESS_DOMAINS = []
+    settings.ALK_HOSTED_SIMULATOR_SECRET_ENV = {}
+    payload = _v1_payload()
+    payload["source"] = {"kind": "provider", "visibility": "public"}
+    payload["agent"] = {
+        "connector": "retell",
+        "mode": "connect_only",
+        "config": {"agent_id": "not-a-real-agent"},
+        "secret_refs": {
+            "RETELL_API_KEY": {
+                "manager": "platform-vault",
+                "key": "pending-retell-api-key",
+                "version": "1",
+                "purpose": "target_provider",
+            }
+        },
+    }
+    payload["credential_values"] = {"RETELL_API_KEY": "valid-key"}
+    request = SimpleNamespace(
+        validated_data=payload,
+        build_absolute_uri=lambda _path: "https://harness.example.test/",
+    )
+    failed_target = SimpleNamespace(
+        as_dict=lambda: {
+            "provider": "retell_target",
+            "label": "Retell voice agent",
+            "aliases": ["RETELL_API_KEY"],
+            "ok": False,
+            "message": (
+                "Retell voice agent ID was not found or is not accessible with "
+                "RETELL_API_KEY"
+            ),
+        }
+    )
+
+    with (
+        patch(
+            "simulate.services.harness_provider._preflight_source_connectors",
+            return_value=([], [], 0),
+        ),
+        patch(
+            "simulate.services.harness_credential_probes.probe_all",
+            return_value=[],
+        ),
+        patch(
+            "simulate.services.harness_credential_probes.probe_provider_target",
+            return_value=failed_target,
+        ),
+    ):
+        response = DaytonaHarnessProvider().preflight(request)
+
+    assert response.data["ready_to_submit"] is False
+    assert response.data["credentials"]["probe"][-1]["provider"] == "retell_target"
+    assert "ID was not found" in response.data["credentials"]["probe"][-1]["message"]
+
+
 def test_repository_source_remains_required_for_environment_backed_provider():
     payload = _v1_payload()
     payload.pop("source")

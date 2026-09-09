@@ -35048,36 +35048,38 @@ export const SimulateApiHarnessJobsCreateBody = zod.object({
     .enum(["futureagi.harness-job.v1"])
     .default(simulateApiHarnessJobsCreateBodySchemaVersionDefault),
   run_id: zod.string().uuid().optional(),
-  source: zod.object({
-    kind: zod.enum(["github", "archive", "remote"]),
-    repository: zod
-      .string()
-      .min(1)
-      .regex(simulateApiHarnessJobsCreateBodySourceRepositoryRegExp)
-      .optional(),
-    ref: zod
-      .string()
-      .min(1)
-      .regex(simulateApiHarnessJobsCreateBodySourceRefRegExp)
-      .optional(),
-    commit_sha: zod
-      .string()
-      .min(1)
-      .regex(simulateApiHarnessJobsCreateBodySourceCommitShaRegExp)
-      .optional(),
-    installation_id: zod
-      .string()
-      .min(1)
-      .max(simulateApiHarnessJobsCreateBodySourceInstallationIdMax)
-      .optional(),
-    archive_artifact_id: zod.string().uuid().optional(),
-    endpoint: zod.string().url().min(1).optional(),
-    visibility: zod
-      .enum(["public", "private"])
-      .default(simulateApiHarnessJobsCreateBodySourceVisibilityDefault),
-  }),
+  source: zod
+    .object({
+      kind: zod.enum(["github", "archive", "remote", "provider"]),
+      repository: zod
+        .string()
+        .min(1)
+        .regex(simulateApiHarnessJobsCreateBodySourceRepositoryRegExp)
+        .optional(),
+      ref: zod
+        .string()
+        .min(1)
+        .regex(simulateApiHarnessJobsCreateBodySourceRefRegExp)
+        .optional(),
+      commit_sha: zod
+        .string()
+        .min(1)
+        .regex(simulateApiHarnessJobsCreateBodySourceCommitShaRegExp)
+        .optional(),
+      installation_id: zod
+        .string()
+        .min(1)
+        .max(simulateApiHarnessJobsCreateBodySourceInstallationIdMax)
+        .optional(),
+      archive_artifact_id: zod.string().uuid().optional(),
+      endpoint: zod.string().url().min(1).optional(),
+      visibility: zod
+        .enum(["public", "private"])
+        .default(simulateApiHarnessJobsCreateBodySourceVisibilityDefault),
+    })
+    .optional(),
   agent: zod.object({
-    connector: zod.enum(["livekit", "vapi", "retell", "auto"]),
+    connector: zod.enum(["livekit", "vapi", "retell", "retell_chat", "auto"]),
     mode: zod
       .enum(["connect_only", "environment_backed", "provider_import"])
       .optional(),
@@ -35354,36 +35356,38 @@ export const SimulateApiHarnessJobsPreflightBody = zod.object({
     .enum(["futureagi.harness-job.v1"])
     .default(simulateApiHarnessJobsPreflightBodySchemaVersionDefault),
   run_id: zod.string().uuid().optional(),
-  source: zod.object({
-    kind: zod.enum(["github", "archive", "remote"]),
-    repository: zod
-      .string()
-      .min(1)
-      .regex(simulateApiHarnessJobsPreflightBodySourceRepositoryRegExp)
-      .optional(),
-    ref: zod
-      .string()
-      .min(1)
-      .regex(simulateApiHarnessJobsPreflightBodySourceRefRegExp)
-      .optional(),
-    commit_sha: zod
-      .string()
-      .min(1)
-      .regex(simulateApiHarnessJobsPreflightBodySourceCommitShaRegExp)
-      .optional(),
-    installation_id: zod
-      .string()
-      .min(1)
-      .max(simulateApiHarnessJobsPreflightBodySourceInstallationIdMax)
-      .optional(),
-    archive_artifact_id: zod.string().uuid().optional(),
-    endpoint: zod.string().url().min(1).optional(),
-    visibility: zod
-      .enum(["public", "private"])
-      .default(simulateApiHarnessJobsPreflightBodySourceVisibilityDefault),
-  }),
+  source: zod
+    .object({
+      kind: zod.enum(["github", "archive", "remote", "provider"]),
+      repository: zod
+        .string()
+        .min(1)
+        .regex(simulateApiHarnessJobsPreflightBodySourceRepositoryRegExp)
+        .optional(),
+      ref: zod
+        .string()
+        .min(1)
+        .regex(simulateApiHarnessJobsPreflightBodySourceRefRegExp)
+        .optional(),
+      commit_sha: zod
+        .string()
+        .min(1)
+        .regex(simulateApiHarnessJobsPreflightBodySourceCommitShaRegExp)
+        .optional(),
+      installation_id: zod
+        .string()
+        .min(1)
+        .max(simulateApiHarnessJobsPreflightBodySourceInstallationIdMax)
+        .optional(),
+      archive_artifact_id: zod.string().uuid().optional(),
+      endpoint: zod.string().url().min(1).optional(),
+      visibility: zod
+        .enum(["public", "private"])
+        .default(simulateApiHarnessJobsPreflightBodySourceVisibilityDefault),
+    })
+    .optional(),
   agent: zod.object({
-    connector: zod.enum(["livekit", "vapi", "retell", "auto"]),
+    connector: zod.enum(["livekit", "vapi", "retell", "retell_chat", "auto"]),
     mode: zod
       .enum(["connect_only", "environment_backed", "provider_import"])
       .optional(),
@@ -36018,6 +36022,8 @@ export const simulateApiHarnessAttemptsResultsBodyCallRecordingArtifactsItemRegE
   new RegExp("^sha256:[0-9a-f]{64}$");
 export const simulateApiHarnessAttemptsResultsBodyCallRecordingArtifactsDefault =
   [];
+export const simulateApiHarnessAttemptsResultsBodyCallStopReasonMax = 128;
+
 export const simulateApiHarnessAttemptsResultsBodyFailureStageMax = 64;
 
 export const simulateApiHarnessAttemptsResultsBodyFailureCodeMax = 128;
@@ -36083,6 +36089,11 @@ export const SimulateApiHarnessAttemptsResultsBody = zod.object({
       .default(
         simulateApiHarnessAttemptsResultsBodyCallRecordingArtifactsDefault,
       ),
+    stop_reason: zod
+      .string()
+      .min(1)
+      .max(simulateApiHarnessAttemptsResultsBodyCallStopReasonMax)
+      .optional(),
   }),
   failure: zod.object({
     domain: zod.enum([

@@ -102,7 +102,8 @@ class HarnessAgentSerializer(serializers.Serializer):
                 invalid.append(str(key))
         if invalid:
             raise serializers.ValidationError(
-                "config must contain scalar non-secret values; use secret_refs"
+                "config must contain scalar non-secret values; move "
+                f"{', '.join(sorted(invalid))} to credential values/secret_refs"
             )
         return value
 

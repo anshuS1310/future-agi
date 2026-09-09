@@ -39,7 +39,9 @@ import { paths } from "src/routes/paths";
 import { parseDotEnv } from "./dotenv";
 import {
   credentialValue,
+  isSecretCredentialName,
   mergePastedCredentials,
+  partitionConfigurationValues,
   updateCredential,
 } from "./credentialValues";
 import { errorMessage, readable, stages } from "./harnessShared";
@@ -261,8 +263,13 @@ export default function HarnessCreate() {
 
   const targetCredentialValues = () => {
     const name = providerCredentialName(connector);
+    // Reclassify at the serialization boundary too. This repairs values that
+    // entered state under stale scanner metadata (or survived a hot reload)
+    // and guarantees secret-looking names never reach agent.config.
+    const partitioned = partitionConfigurationValues(configurationValues);
     return {
       ...environmentValues,
+      ...partitioned.environmentValues,
       ...(name && providerCredentialValues[name]
         ? { [name]: providerCredentialValues[name] }
         : {}),
@@ -330,7 +337,8 @@ export default function HarnessCreate() {
         ? { mode: providerMode }
         : {}),
       config: {
-        ...configurationValues,
+        ...partitionConfigurationValues(configurationValues)
+          .configurationValues,
         ...(connector === "vapi" && providerMode === "connect_only"
           ? { assistant_id: providerTargetId.trim() }
           : {}),
@@ -593,7 +601,12 @@ export default function HarnessCreate() {
   // Blocking and optional variables get the same row, so an optional one can be
   // set without hunting for somewhere else to put it.
   const renderCredentialRow = (item, index) => {
-    const isSecret = item.kind === "secret";
+    // Source inspection is advisory and may describe a provider key as a
+    // generic value. Secret-looking names are always handled as credentials,
+    // matching the backend's fail-closed config validation.
+    const isSecret =
+      item.kind === "secret" ||
+      isSecretCredentialName(item.environment_name);
     const isFile = item.kind === "file";
     const revealed = revealedSecrets.has(item.environment_name);
     return (

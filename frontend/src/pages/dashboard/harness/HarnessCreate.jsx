@@ -342,7 +342,7 @@ export default function HarnessCreate() {
       memory_mb: 8192,
       parallelism: 1,
       concurrency_weight: 1,
-      max_duration_seconds: 3600,
+      max_duration_seconds: Math.max(3600, Number(scenarioCount) * 360),
       network_policy: "live",
     },
     security: {

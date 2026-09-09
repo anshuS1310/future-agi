@@ -686,6 +686,7 @@ def _apply_receipt_to_call(
         call.ended_at = call_data["ended_at"]
         call.completed_at = call_data["ended_at"]
         call.duration_seconds = round(call_data["duration_ms"] / 1000)
+        call.ended_reason = call_data.get("stop_reason") or ""
     elif body["status"] == "skipped":
         call.completed_at = timezone.now()
     metadata = dict(call.call_metadata or {})
@@ -711,6 +712,7 @@ def _apply_receipt_to_call(
         "ended_at",
         "completed_at",
         "duration_seconds",
+        "ended_reason",
         "call_metadata",
         "error_message",
         "updated_at",

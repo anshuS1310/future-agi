@@ -275,6 +275,15 @@ class HarnessJobCreateSerializer(serializers.Serializer):
             if not attrs.get(name):
                 attrs[name] = self.fields[name].run_validation({})
         runtime = attrs["runtime"]
+        # Voice scenarios are intentionally sequential by default and may each consume the
+        # full conversation plus teardown/retry allowance.  A fixed one-hour ceiling made
+        # otherwise healthy large runs expire partway through (typically around scenario
+        # 20-30).  Enforce the same conservative per-scenario budget server-side so older
+        # UIs and direct API clients cannot reintroduce that failure mode.
+        if attrs["scenario_count"] > 10:
+            runtime["max_duration_seconds"] = max(
+                runtime["max_duration_seconds"], attrs["scenario_count"] * 360
+            )
         connector = attrs["agent"]["connector"]
         if connector in {"livekit", "vapi", "retell", "auto"} and (
             runtime["parallelism"] > runtime["cpu_units"]

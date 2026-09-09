@@ -100,10 +100,25 @@ def test_default_provider_is_daytona():
 def test_hosted_job_scenario_count_is_bounded_at_two_hundred():
     accepted = HarnessJobCreateSerializer(data=_v1_payload(scenario_count=200))
     assert accepted.is_valid(), accepted.errors
+    assert accepted.validated_data["runtime"]["max_duration_seconds"] == 72_000
 
     rejected = HarnessJobCreateSerializer(data=_v1_payload(scenario_count=201))
     assert not rejected.is_valid()
     assert "scenario_count" in rejected.errors
+
+
+def test_large_hosted_job_gets_a_per_scenario_runtime_budget():
+    serializer = HarnessJobCreateSerializer(data=_v1_payload(scenario_count=50))
+
+    assert serializer.is_valid(), serializer.errors
+    assert serializer.validated_data["runtime"]["max_duration_seconds"] == 18_000
+
+
+def test_small_hosted_job_preserves_the_requested_runtime_budget():
+    serializer = HarnessJobCreateSerializer(data=_v1_payload(scenario_count=10))
+
+    assert serializer.is_valid(), serializer.errors
+    assert serializer.validated_data["runtime"]["max_duration_seconds"] == 600
 
 
 def test_customer_cannot_submit_platform_simulator_secret_purpose():

@@ -279,6 +279,7 @@ def test_receipt_projects_actual_call_end_time_and_duration():
             "ended_at": "2026-08-27T10:01:22Z",
             "duration_ms": 82_000,
             "recording_artifacts": [],
+            "stop_reason": "simulator_end_call",
         },
         "sub_goals": [],
         "evaluations": [],
@@ -297,6 +298,7 @@ def test_receipt_projects_actual_call_end_time_and_duration():
     assert call.ended_at == "2026-08-27T10:01:22Z"
     assert call.completed_at == "2026-08-27T10:01:22Z"
     assert call.duration_seconds == 82
+    assert call.ended_reason == "simulator_end_call"
     assert call.error_message == ""
     call.save.assert_called_once()
 

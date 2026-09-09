@@ -54,7 +54,6 @@ _ARTIFACT_KINDS = {
     "recording_assistant",
     "transcript",
     "tool_trace",
-    "evidence",
     "result",
     "build",
     "trace",
@@ -63,15 +62,7 @@ _ARTIFACT_KINDS = {
 }
 _ALLOWED_ARTIFACTS = {
     "metadata-only": {"build", "result", "log"},
-    "traces": {
-        "build",
-        "result",
-        "log",
-        "trace",
-        "tool_trace",
-        "transcript",
-        "evidence",
-    },
+    "traces": {"build", "result", "log", "trace", "tool_trace", "transcript"},
     "traces-and-recordings": _ARTIFACT_KINDS - {"other"},
     "full": _ARTIFACT_KINDS,
 }

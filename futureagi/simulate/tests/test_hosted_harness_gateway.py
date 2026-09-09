@@ -522,7 +522,7 @@ def test_unified_progress_freezes_authoring_for_saved_reruns(organization):
     job, _ = create_hosted_job(
         organization, _payload(), idempotency_key="freeze-unified-authoring"
     )
-    attempt = SimpleNamespace(id="attempt-1", job_id=job.id)
+    attempt = SimpleNamespace(id="attempt-1", job_id=job.id, attempt_number=1)
     files = {
         "/work/authoring/contract.json": b'{"modality":"voice"}',
         "/work/authoring/environment-bundle/environment-plan.json": b'{"runtime":{}}',

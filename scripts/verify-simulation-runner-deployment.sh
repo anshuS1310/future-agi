@@ -513,6 +513,24 @@ runner_value() {
     ' "$values_file"
 }
 
+# Compose renders durations as 5m30s / 1h10m / 45s; the stop grace must be
+# compared in seconds against the worker's drain timeout.
+compose_duration_seconds() {
+    local text=$1 total=0 num unit
+    while [[ "$text" =~ ^([0-9]+)([hms]) ]]; do
+        num=${BASH_REMATCH[1]}
+        unit=${BASH_REMATCH[2]}
+        case "$unit" in
+            h) total=$((total + num * 3600)) ;;
+            m) total=$((total + num * 60)) ;;
+            s) total=$((total + num)) ;;
+        esac
+        text=${text#"${BASH_REMATCH[0]}"}
+    done
+    [[ -z "$text" ]] || return 1
+    printf '%s' "$total"
+}
+
 assert_integer_at_least() {
     local value=$1
     local minimum=$2
@@ -572,6 +590,17 @@ compose_workflow_concurrency=$(compose_field_value TEMPORAL_MAX_CONCURRENT_WORKF
 [[ "$compose_child_concurrency" == "$compose_activity_concurrency" ]] || \
     die "Compose runner concurrency caps differ"
 [[ "$compose_workflow_concurrency" == 8 ]] || die "Compose runner workflow-task concurrency default is not 8"
+# A stop that lands during a phone call must outlast the worker's drain, or
+# Docker force-kills the child mid-call and the leased number stays taken.
+compose_drain_seconds=$(compose_field_value TEMPORAL_GRACEFUL_SHUTDOWN_TIMEOUT "$compose_runner_render")
+compose_stop_grace=$(compose_field_value stop_grace_period "$compose_runner_render")
+[[ "$compose_drain_seconds" =~ ^[0-9]+$ ]] || \
+    die "Compose runner does not set an integer TEMPORAL_GRACEFUL_SHUTDOWN_TIMEOUT"
+[[ -n "$compose_stop_grace" ]] || die "Compose runner does not set stop_grace_period"
+compose_stop_grace_seconds=$(compose_duration_seconds "$compose_stop_grace") || \
+    die "Compose runner stop_grace_period is not a duration: $compose_stop_grace"
+((compose_stop_grace_seconds > compose_drain_seconds)) || \
+    die "Compose runner stop_grace_period must exceed TEMPORAL_GRACEFUL_SHUTDOWN_TIMEOUT"
 if [[ "$explicit_compose_set" == true ]]; then
     echo "Compose configuration (caller-specified set): OK"
 else

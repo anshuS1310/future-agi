@@ -7,7 +7,10 @@ deterministic checkpoints do not come through here.
 
 from __future__ import annotations
 
+import json
 import uuid
+from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
 import structlog
@@ -25,35 +28,20 @@ _SELECTED_EVAL_NAMESPACE = uuid.UUID("2b0f2f19-2c65-4b1e-9c9a-2f1a3b4c5d6e")
 # Each selected eval is one judge call per call in the suite.
 MOST_SELECTED_EVALS = 8
 
-# The customer-agent family plus the voice evals numbered from 200.
-_OFFERED_NAME_PREFIX = "customer_agent"
-_OFFERED_FROM_EVAL_ID = 200
+# The evals the harness may offer, defined in one file a human owns. Absent means never offered,
+# whatever exists in the database; an entry with "visible": false is withheld on purpose and stays
+# in the file so the decision is legible. This is not EvalTemplate.visible_ui.
+HARNESS_EVALS_MANIFEST = Path(__file__).resolve().parent.parent / "harness_evals.json"
 
-# Never offered. The voicemail pair judge a premise a suite need not contain.
-# `conversation_hallucination` needs a `context` variable, and a call has no retrieval context to
-# bind it to. `dead_air_detection` measures the recording rather than the agent: silence is mostly
-# the caller thinking and the transport's own latency. The three choice evals are output-type
-# fixtures, carrying eval_id 0 and no description, that the `customer_agent` prefix swept in.
-_NOT_OFFERED = frozenset(
-    {
-        "voice_mail_detection",
-        "voicemail_handling",
-        "conversation_hallucination",
-        "dead_air_detection",
-        "customer_agent_single_choice",
-        "customer_agent_multi_choices",
-        "customer_agent_score_with_choices",
-    }
-)
 
-# These have no analogue in a chat transcript.
-_VOICE_ONLY_EVALS = frozenset(
-    {
-        "dead_air_detection",
-        "voice_mail_detection",
-        "voicemail_handling",
-    }
-)
+@lru_cache(maxsize=1)
+def offerable_eval_names() -> frozenset[str]:
+    """Manifest names marked offerable. Read once per process; the file ships with the code."""
+    body = json.loads(HARNESS_EVALS_MANIFEST.read_text(encoding="utf-8"))
+    return frozenset(
+        str(entry["name"]) for entry in body["evals"] if entry.get("visible") is True
+    )
+
 
 # Required key to the source the eval runner resolves.
 _SOURCE_BY_KEY_VOICE = {
@@ -114,16 +102,10 @@ def resolve_eval_mapping(
 def offered_evals(organization, workspace, modality: str) -> list[dict[str, Any]]:
     """The catalogue put in front of the guest, already filtered to what this run can run."""
     offered: list[dict[str, Any]] = []
+    offerable = offerable_eval_names()
     for template in _visible_templates(organization, workspace).order_by("name"):
         name = str(template.name or "")
-        if not (
-            name.startswith(_OFFERED_NAME_PREFIX)
-            or (template.eval_id or 0) >= _OFFERED_FROM_EVAL_ID
-        ):
-            continue
-        if name in _NOT_OFFERED:
-            continue
-        if modality != "voice" and name in _VOICE_ONLY_EVALS:
+        if name not in offerable:
             continue
         mapping = resolve_eval_mapping(template, modality)
         if mapping is None:
@@ -167,11 +149,14 @@ def create_selected_eval_configs(
     seen: set[str] = set()
     ordered = [name for name in wanted if not (name in seen or seen.add(name))]
 
+    # The manifest gates this path too, so the docstring above holds.
+    offerable = offerable_eval_names()
     found = {
         str(template.name): template
         for template in _visible_templates(
             run_test.organization, run_test.workspace
         ).filter(name__in=ordered)
+        if str(template.name) in offerable
     }
     missing = [name for name in ordered if name not in found]
     if missing:

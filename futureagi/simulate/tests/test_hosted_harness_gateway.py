@@ -4,15 +4,19 @@ import io
 import json
 import tarfile
 from contextlib import nullcontext
+from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+from django.utils import timezone
 
 from simulate.models import HostedHarnessAttempt, HostedHarnessJob
 from simulate.services.hosted_harness import (
     HostedHarnessError,
     create_hosted_job,
+    record_cleanup,
+    register_attempt,
     request_cancellation,
 )
 from simulate.services.hosted_harness_gateway import (
@@ -531,7 +535,7 @@ def test_unified_progress_freezes_authoring_for_saved_reruns(organization):
         "/tmp/authoring-rerun.tar.gz": b"frozen-authoring",
     }
     sandbox = SimpleNamespace(
-        fs=SimpleNamespace(download_file=lambda path: files[path]),
+        fs=SimpleNamespace(download_file=lambda path, timeout=None: files[path]),
         process=SimpleNamespace(
             exec=lambda command, **kwargs: SimpleNamespace(exit_code=0, result="")
         ),
@@ -742,7 +746,7 @@ class _Filesystem:
     def upload_file(self, content, path):
         self.uploads[path] = content
 
-    def download_file(self, path):
+    def download_file(self, path, timeout=None):
         return b"command-1"
 
 
@@ -762,7 +766,7 @@ class _Process:
         self.session_request = request
         return SimpleNamespace(cmd_id="command-1")
 
-    def get_session_command(self, session_id, command_id):
+    def get_session_command(self, session_id, command_id, request_timeout=None):
         return SimpleNamespace(exit_code=None, status="running")
 
 
@@ -783,7 +787,7 @@ class _Daytona:
         self.params = params
         return self.sandbox
 
-    def get(self, sandbox_id):
+    def get(self, sandbox_id, request_timeout=None):
         return self.sandbox
 
     def delete(self, sandbox, **kwargs):
@@ -1305,6 +1309,120 @@ def test_reconcile_relaunches_infra_failure_until_budget_then_fails(
     assert attempt2.attempt_number == 2
     # Attempt 2 crashes again: budget spent (2 not < 2) -> terminal FAILED.
     assert gateway.reconcile_completed(attempt2).state == HostedHarnessJob.State.FAILED
+
+
+@pytest.mark.django_db
+def test_reconcile_tolerates_brief_daytona_toolbox_outage(organization, monkeypatch):
+    from daytona import DaytonaError
+
+    job, _ = create_hosted_job(
+        organization, _payload(), idempotency_key="brief-toolbox-outage"
+    )
+    attempt = register_attempt(
+        job.id,
+        endpoint_base_url="https://platform.example.com",
+        provider_ref="sandbox-1",
+    ).attempt
+    attempt.heartbeat_at = timezone.now()
+    attempt.save(update_fields=["heartbeat_at", "updated_at"])
+    gateway = object.__new__(DaytonaHostedGateway)
+    monkeypatch.setattr(
+        gateway,
+        "inspect",
+        lambda _: (_ for _ in ()).throw(DaytonaError("toolbox unavailable", 502)),
+    )
+    monkeypatch.setattr(
+        gateway,
+        "_delete_and_record",
+        lambda *args, **kwargs: pytest.fail("recent outage must not delete sandbox"),
+    )
+
+    assert gateway.reconcile_completed(attempt) is None
+    attempt.refresh_from_db()
+    assert attempt.state == HostedHarnessAttempt.State.REGISTERED
+    assert attempt.terminal_failure is None
+
+
+@pytest.mark.django_db
+def test_reconcile_replaces_daytona_sandbox_after_toolbox_grace(
+    organization, monkeypatch
+):
+    from daytona import DaytonaError
+
+    job, _ = create_hosted_job(
+        organization, _payload(), idempotency_key="stale-toolbox-outage"
+    )
+    attempt = register_attempt(
+        job.id,
+        endpoint_base_url="https://platform.example.com",
+        provider_ref="sandbox-1",
+    ).attempt
+    attempt.heartbeat_at = timezone.now() - timedelta(minutes=4)
+    attempt.save(update_fields=["heartbeat_at", "updated_at"])
+    gateway = object.__new__(DaytonaHostedGateway)
+    monkeypatch.setattr(
+        gateway,
+        "inspect",
+        lambda _: (_ for _ in ()).throw(DaytonaError("toolbox unavailable", 502)),
+    )
+    captured = {}
+
+    def _fake_delete(stale_attempt, *, retry_pending=False):
+        captured["retry_pending"] = retry_pending
+        return record_cleanup(
+            stale_attempt.id,
+            provider_ref=str(stale_attempt.provider_ref),
+            verified_absent=True,
+            retry_pending=retry_pending,
+            details={"provider": "test"},
+        )
+
+    monkeypatch.setattr(gateway, "_delete_and_record", _fake_delete)
+
+    reconciled = gateway.reconcile_completed(attempt)
+
+    attempt.refresh_from_db()
+    assert attempt.state == HostedHarnessAttempt.State.FAILED
+    assert attempt.terminal_failure["domain"] == "infrastructure"
+    assert attempt.terminal_failure["code"] == "sandbox_unreachable"
+    assert captured["retry_pending"] is True
+    assert reconciled.state == HostedHarnessJob.State.RETRY_WAIT
+
+
+@pytest.mark.django_db
+def test_reconcile_waits_when_daytona_deletion_is_already_in_progress(
+    organization, monkeypatch
+):
+    from daytona import DaytonaConflictError, DaytonaError
+
+    job, _ = create_hosted_job(
+        organization, _payload(), idempotency_key="toolbox-delete-in-progress"
+    )
+    attempt = register_attempt(
+        job.id,
+        endpoint_base_url="https://platform.example.com",
+        provider_ref="sandbox-1",
+    ).attempt
+    attempt.heartbeat_at = timezone.now() - timedelta(minutes=4)
+    attempt.save(update_fields=["heartbeat_at", "updated_at"])
+    gateway = object.__new__(DaytonaHostedGateway)
+    monkeypatch.setattr(
+        gateway,
+        "inspect",
+        lambda _: (_ for _ in ()).throw(DaytonaError("toolbox unavailable", 502)),
+    )
+    monkeypatch.setattr(
+        gateway,
+        "_delete_and_record",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            DaytonaConflictError("sandbox state change in progress", 409)
+        ),
+    )
+
+    assert gateway.reconcile_completed(attempt) is None
+    attempt.refresh_from_db()
+    assert attempt.state == HostedHarnessAttempt.State.FAILED
+    assert attempt.terminal_failure["code"] == "sandbox_unreachable"
 
 
 @pytest.mark.django_db

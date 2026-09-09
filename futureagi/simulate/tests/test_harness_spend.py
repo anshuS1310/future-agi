@@ -174,7 +174,9 @@ def test_the_ledger_is_read_before_the_only_delete_that_exists(monkeypatch):
     order = []
 
     class _Client:
-        def get(self, ref):
+        # **kwargs so a new option on the real call (request_timeout, say) does not read as a
+        # broken ordering invariant.
+        def get(self, ref, **kwargs):
             return "sandbox"
 
         def delete(self, sandbox, **kwargs):

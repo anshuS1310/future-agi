@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from uuid import UUID
 import hashlib
 import json
 import logging
 import tempfile
 from datetime import timedelta
 from typing import Any, BinaryIO
+from uuid import UUID
 
 from django.db import IntegrityError, transaction
 from django.utils import timezone
@@ -23,6 +23,7 @@ from simulate.models import (
     HostedHarnessReceipt,
     HostedHarnessScenario,
 )
+from simulate.models.chat_message import ChatMessageModel
 from simulate.services.hosted_harness import (
     HostedHarnessError,
     _resolve_scenario_modality,
@@ -686,6 +687,7 @@ def _apply_receipt_to_call(
         call.ended_at = call_data["ended_at"]
         call.completed_at = call_data["ended_at"]
         call.duration_seconds = round(call_data["duration_ms"] / 1000)
+        call.ended_reason = call_data.get("stop_reason") or ""
     elif body["status"] == "skipped":
         call.completed_at = timezone.now()
     metadata = dict(call.call_metadata or {})
@@ -711,6 +713,7 @@ def _apply_receipt_to_call(
         "ended_at",
         "completed_at",
         "duration_seconds",
+        "ended_reason",
         "call_metadata",
         "error_message",
         "updated_at",
@@ -846,7 +849,9 @@ def _apply_receipt_to_call(
                 else []
             )
         except Exception:  # noqa: BLE001 - a receipt is never lost over what it schedules next
-            logger.exception("harness_eval_selection_lookup_failed", call_id=str(call_id))
+            logger.exception(
+                "harness_eval_selection_lookup_failed", call_id=str(call_id)
+            )
             selected = []
         if selected:
             transaction.on_commit(
@@ -1001,6 +1006,55 @@ def _ingest_hosted_transcript(
         except json.JSONDecodeError:
             payload = {"transcript": raw, "messages": []}
         messages = payload.get("messages") if isinstance(payload, dict) else []
+        # Guests predating the structured transcript contract uploaded the
+        # rendered `customer: ...` / `agent: ...` text. Preserve visibility for
+        # those in-flight and retained runs while all new guests emit JSON.
+        if (
+            call.simulation_call_type == CallExecution.SimulationCallType.TEXT
+            and not messages
+            and isinstance(payload, dict)
+            and payload.get("transcript")
+        ):
+            messages = []
+            for line in str(payload["transcript"]).splitlines():
+                speaker, separator, content = line.partition(":")
+                if separator and speaker.strip().lower() in {"customer", "agent"}:
+                    messages.append(
+                        {
+                            "role": (
+                                "user"
+                                if speaker.strip().lower() == "customer"
+                                else "assistant"
+                            ),
+                            "content": content.strip(),
+                        }
+                    )
+        if (
+            call.simulation_call_type == CallExecution.SimulationCallType.TEXT
+            and isinstance(messages, list)
+        ):
+            from simulate.services.alk_simulate_ingestion import (
+                _store_alk_chat_messages,
+            )
+
+            segments = [
+                {
+                    "speaker_role": str(message.get("role") or "unknown"),
+                    "content": str(message.get("content") or ""),
+                    **(
+                        {"tool_calls": message["tool_calls"]}
+                        if message.get("tool_calls")
+                        else {}
+                    ),
+                }
+                for message in messages
+                if isinstance(message, dict) and message.get("content") is not None
+            ]
+            ChatMessageModel.objects.filter(call_execution=call).delete()
+            CallTranscript.objects.filter(call_execution=call).delete()
+            if segments:
+                _store_alk_chat_messages(call, segments)
+            return
         rows: list[CallTranscript] = []
         if isinstance(messages, list):
             # The v2 transcript carries absolute speech timing

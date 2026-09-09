@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import sys
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -11,6 +12,7 @@ from django.utils import timezone as django_timezone
 from rest_framework.test import APIClient
 
 from simulate.models import CallExecution, HostedHarnessJob, HostedHarnessReceipt
+from simulate.models.chat_message import ChatMessageModel
 from simulate.services.hosted_harness import (
     HostedHarnessError,
     canonical_digest,
@@ -21,6 +23,7 @@ from simulate.services.hosted_harness import (
 from simulate.services.hosted_harness_ingestion import (
     _apply_receipt_to_call,
     _call_lifecycle_status,
+    _ingest_hosted_transcript,
     _normalized_artifact_content_type,
     _read_hosted_tool_trace,
     _receipt_evaluation_coverage,
@@ -272,18 +275,22 @@ def test_receipt_coverage_distinguishes_missing_grading_from_agent_failure():
 
 
 def test_errored_scenario_with_completed_call_keeps_completed_lifecycle():
-    assert _call_lifecycle_status(
-        {
-            "status": "errored",
-            "call": {
-                "started_at": "2026-08-27T10:00:00Z",
-                "ended_at": "2026-08-27T10:05:00Z",
-            },
-        }
-    ) == CallExecution.CallStatus.COMPLETED
-    assert _call_lifecycle_status(
-        {"status": "errored", "call": None}
-    ) == CallExecution.CallStatus.FAILED
+    assert (
+        _call_lifecycle_status(
+            {
+                "status": "errored",
+                "call": {
+                    "started_at": "2026-08-27T10:00:00Z",
+                    "ended_at": "2026-08-27T10:05:00Z",
+                },
+            }
+        )
+        == CallExecution.CallStatus.COMPLETED
+    )
+    assert (
+        _call_lifecycle_status({"status": "errored", "call": None})
+        == CallExecution.CallStatus.FAILED
+    )
 
 
 def test_receipt_projects_actual_call_end_time_and_duration():
@@ -298,16 +305,18 @@ def test_receipt_projects_actual_call_end_time_and_duration():
             "ended_at": "2026-08-27T10:01:22Z",
             "duration_ms": 82_000,
             "recording_artifacts": [],
+            "stop_reason": "simulator_end_call",
         },
         "sub_goals": [],
         "evaluations": [],
     }
 
-    with patch(
-        "simulate.services.hosted_harness_ingestion."
-        "HostedHarnessArtifact.no_workspace_objects"
-    ) as artifacts, patch(
-        "simulate.services.hosted_harness_ingestion.transaction.on_commit"
+    with (
+        patch(
+            "simulate.services.hosted_harness_ingestion."
+            "HostedHarnessArtifact.no_workspace_objects"
+        ) as artifacts,
+        patch("simulate.services.hosted_harness_ingestion.transaction.on_commit"),
     ):
         artifacts.filter.return_value.order_by.return_value.last.return_value = None
         _apply_receipt_to_call(registration, body)
@@ -316,6 +325,7 @@ def test_receipt_projects_actual_call_end_time_and_duration():
     assert call.ended_at == "2026-08-27T10:01:22Z"
     assert call.completed_at == "2026-08-27T10:01:22Z"
     assert call.duration_seconds == 82
+    assert call.ended_reason == "simulator_end_call"
     assert call.error_message == ""
     call.save.assert_called_once()
 
@@ -393,6 +403,75 @@ def _headers(capability):
         "HTTP_AUTHORIZATION": f"Bearer {capability.token}",
         "HTTP_X_HARNESS_FENCE": capability.fence,
     }
+
+
+@pytest.mark.django_db
+def test_hosted_text_transcript_is_materialized_for_chat_ui(organization, workspace):
+    job, _ = create_hosted_job(
+        organization,
+        _payload(),
+        idempotency_key="hosted-chat-transcript",
+        workspace=workspace,
+    )
+    capability = register_attempt(job.id, endpoint_base_url="https://platform.example")
+    client = APIClient()
+    provision = client.post(
+        f"{BASE}/{capability.attempt.id}/scenarios/",
+        {
+            "operation": "provision",
+            "name": "Chat transcript",
+            "modality": "text",
+            "personas": [
+                {
+                    "scenario_key": "chat-one",
+                    "name": "Customer",
+                    "situation": "Needs billing help",
+                    "outcome": "Gets an answer",
+                }
+            ],
+        },
+        format="json",
+        **_headers(capability),
+    )
+    result = provision.json()["result"]
+    client.post(
+        f"{BASE}/{capability.attempt.id}/scenarios/",
+        {
+            "operation": "begin",
+            "run_test_id": result["run_test_id"],
+            "scenario_keys": ["chat-one"],
+        },
+        format="json",
+        **_headers(capability),
+    )
+    call = CallExecution.objects.get(hosted_registration__scenario_key="chat-one")
+    call.simulation_call_type = CallExecution.SimulationCallType.TEXT
+    call.save(update_fields=["simulation_call_type"])
+    response = MagicMock()
+    response.read.return_value = json.dumps(
+        {
+            "messages": [
+                {"role": "user", "content": "Where is my invoice?"},
+                {"role": "assistant", "content": "I can look that up."},
+            ]
+        }
+    ).encode()
+    storage = MagicMock()
+    storage.get_object.return_value = response
+
+    with patch(
+        "simulate.services.hosted_harness_ingestion.get_storage_client",
+        return_value=storage,
+    ):
+        _ingest_hosted_transcript(call, SimpleNamespace(object_key="transcript.json"))
+
+    assert list(
+        ChatMessageModel.objects.filter(call_execution=call)
+        .order_by("created_at", "role")
+        .values_list("role", flat=True)
+    ) == ["user", "assistant"]
+    response.close.assert_called_once_with()
+    response.release_conn.assert_called_once_with()
 
 
 def _upload_required_artifacts(client, capability, headers):

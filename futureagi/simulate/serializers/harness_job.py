@@ -26,7 +26,7 @@ class SecretReferenceSerializer(serializers.Serializer):
 
 
 class HarnessSourceSerializer(serializers.Serializer):
-    kind = serializers.ChoiceField(choices=("github", "archive", "remote"))
+    kind = serializers.ChoiceField(choices=("github", "archive", "remote", "provider"))
     repository = serializers.RegexField(
         r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", required=False, allow_null=True
     )
@@ -102,7 +102,8 @@ class HarnessAgentSerializer(serializers.Serializer):
                 invalid.append(str(key))
         if invalid:
             raise serializers.ValidationError(
-                "config must contain scalar non-secret values; use secret_refs"
+                "config must contain scalar non-secret values; move "
+                f"{', '.join(sorted(invalid))} to credential values/secret_refs"
             )
         return value
 
@@ -254,7 +255,7 @@ class HarnessJobCreateSerializer(serializers.Serializer):
         default="futureagi.harness-job.v1",
     )
     run_id = serializers.UUIDField(required=False)
-    source = HarnessSourceSerializer()
+    source = HarnessSourceSerializer(required=False)
     agent = HarnessAgentSerializer()
     scenario_count = serializers.IntegerField(default=10, min_value=1, max_value=200)
     seed = serializers.IntegerField(required=False, allow_null=True)
@@ -275,19 +276,54 @@ class HarnessJobCreateSerializer(serializers.Serializer):
             if not attrs.get(name):
                 attrs[name] = self.fields[name].run_validation({})
         runtime = attrs["runtime"]
-        connector = attrs["agent"]["connector"]
+        agent = attrs["agent"]
+        source = attrs.get("source")
+        provider_target_mode = agent.get("mode") in {
+            "connect_only",
+            "provider_import",
+        }
+        if source is None:
+            if (
+                agent["connector"] not in {"vapi", "retell", "retell_chat"}
+                or not provider_target_mode
+            ):
+                raise serializers.ValidationError(
+                    {
+                        "source": "required unless an existing provider agent ID is connected"
+                    }
+                )
+            attrs["source"] = {"kind": "provider", "visibility": "public"}
+        elif source["kind"] == "provider" and (
+            agent["connector"] not in {"vapi", "retell", "retell_chat"}
+            or not provider_target_mode
+        ):
+            raise serializers.ValidationError(
+                {
+                    "source": "provider sources require a connected Vapi or Retell agent ID"
+                }
+            )
+        # Voice scenarios are intentionally sequential by default and may each consume the
+        # full conversation plus teardown/retry allowance.  A fixed one-hour ceiling made
+        # otherwise healthy large runs expire partway through (typically around scenario
+        # 20-30).  Enforce the same conservative per-scenario budget server-side so older
+        # UIs and direct API clients cannot reintroduce that failure mode.
+        if attrs["scenario_count"] > 10:
+            runtime["max_duration_seconds"] = max(
+                runtime["max_duration_seconds"], attrs["scenario_count"] * 360
+            )
+        connector = agent["connector"]
         if connector in {"livekit", "vapi", "retell", "auto"} and (
             runtime["parallelism"] > runtime["cpu_units"]
         ):
             raise serializers.ValidationError(
                 {"runtime": "voice parallelism must not exceed cpu_units"}
             )
-        if attrs["source"]["kind"] == "remote" and attrs["agent"]["secret_refs"]:
+        if attrs["source"]["kind"] == "remote" and agent["secret_refs"]:
             raise serializers.ValidationError(
                 {"agent": "remote sources must own their target credentials"}
             )
         if self.reject_missing_credentials and attrs["source"]["kind"] != "remote":
-            missing = missing_provider_credentials(attrs["agent"])
+            missing = missing_provider_credentials(agent)
             if missing:
                 raise serializers.ValidationError(
                     {

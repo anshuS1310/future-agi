@@ -31,12 +31,18 @@ _OFFERED_FROM_EVAL_ID = 200
 
 # Never offered. The voicemail pair judge a premise a suite need not contain.
 # `conversation_hallucination` needs a `context` variable, and a call has no retrieval context to
-# bind it to, so it could only ever be pointed at something that is not what it is judging.
+# bind it to. `dead_air_detection` measures the recording rather than the agent: silence is mostly
+# the caller thinking and the transport's own latency. The three choice evals are output-type
+# fixtures, carrying eval_id 0 and no description, that the `customer_agent` prefix swept in.
 _NOT_OFFERED = frozenset(
     {
         "voice_mail_detection",
         "voicemail_handling",
         "conversation_hallucination",
+        "dead_air_detection",
+        "customer_agent_single_choice",
+        "customer_agent_multi_choices",
+        "customer_agent_score_with_choices",
     }
 )
 

@@ -90,31 +90,41 @@ def test_the_catalogue_offers_the_family_and_the_numbered_voice_evals(
     organization, workspace
 ):
     _template("customer_agent_loop_detection", ["conversation"])
-    _template("dead_air_detection", ["conversation"], eval_id=201)
     _template("no_misselling", ["conversation"], eval_id=202)
     _template("some_unrelated_eval", ["conversation"], eval_id=12)
 
     offered = {item["name"] for item in offered_evals(organization, workspace, "voice")}
     assert "customer_agent_loop_detection" in offered
-    assert "dead_air_detection" in offered
     assert "no_misselling" in offered
     assert "some_unrelated_eval" not in offered
 
 
 @pytest.mark.django_db
-def test_an_audio_eval_is_offered_on_voice_and_withheld_from_text(organization, workspace):
-    """`dead_air_detection` asks for the recording itself, not a transcript of it.
-
-    Its required key had no source, so `resolve_eval_mapping` refused it and the catalogue
-    dropped it silently on every run, voice included.
-    """
+def test_dead_air_is_never_offered(organization, workspace):
+    """It measures the recording, not the agent: most silence is caller thinking and transport
+    latency, so the verdict says little about the agent under test."""
     _template("dead_air_detection", ["input_audio"], eval_id=201)
 
-    voice = {item["name"] for item in offered_evals(organization, workspace, "voice")}
-    assert "dead_air_detection" in voice
+    for modality in ("voice", "text"):
+        offered = {item["name"] for item in offered_evals(organization, workspace, modality)}
+        assert "dead_air_detection" not in offered
 
-    text = {item["name"] for item in offered_evals(organization, workspace, "text")}
-    assert "dead_air_detection" not in text
+
+@pytest.mark.django_db
+def test_the_output_type_fixtures_are_never_offered(organization, workspace):
+    """`customer_agent_single_choice` and its two siblings are fixtures for output types, carrying
+    eval_id 0 and no description. The customer_agent prefix swept them into the catalogue and a
+    guest picked two of them on a real run."""
+    for name in (
+        "customer_agent_single_choice",
+        "customer_agent_multi_choices",
+        "customer_agent_score_with_choices",
+    ):
+        _template(name, ["conversation"], eval_id=0)
+    _template("customer_agent_query_handling", ["conversation"])
+
+    offered = {item["name"] for item in offered_evals(organization, workspace, "voice")}
+    assert offered == {"customer_agent_query_handling"}
 
 
 @pytest.mark.django_db

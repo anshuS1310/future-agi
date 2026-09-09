@@ -127,6 +127,14 @@ describe("the call limit field on the page", () => {
     expect(submittedConfig().voice_call_timeout_seconds).toBe(600);
   });
 
+  it("advertises the bounds a call limit is meant to stay inside", async () => {
+    await openForm();
+    const field = screen.getByLabelText(/Call limit \(seconds\)/i);
+
+    expect(field).toHaveAttribute("min", "30");
+    expect(field).toHaveAttribute("max", "3600");
+  });
+
   it("sends no limit at all when the field is left alone", async () => {
     await openForm();
     await userEvent.click(screen.getByRole("button", { name: /Run end to end/i }));

@@ -14,8 +14,8 @@ from pathlib import Path
 from typing import Any
 
 import structlog
-from django.conf import settings
 from django.apps import apps
+from django.conf import settings
 from django.db.models import Q
 
 from model_hub.models.evals_metric import EvalTemplate

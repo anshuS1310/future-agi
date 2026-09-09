@@ -1532,9 +1532,16 @@ class DaytonaHostedGateway:
             # state.json + manifest.json on newer guests), and an allow-list here silently
             # drops the marker the next reuse needs. Only the sealed bundle is left out: it is
             # large and bundle_author_v2 regenerates it from this directory on every launch.
+            # cost.json is the harness's own bill, not part of a saved world, and it must not
+            # travel with the reusable artefacts. A reuse run restores this archive instead of
+            # authoring, so a bill left inside it is read back as though this run had spent it:
+            # every reuse reported the first run's authoring cost again, identical to the cent and
+            # to the token. Left out, a reuse that authors nothing reports nothing, and one that
+            # extends the suite records only the extra work it really did.
             packed = sandbox.process.exec(
                 "cd /work/authoring && tar -czf /tmp/authoring.tar.gz "
-                "--exclude=./environment-bundle --exclude=__pycache__ .",
+                "--exclude=./environment-bundle --exclude=__pycache__ "
+                "--exclude=./cost.json .",
                 timeout=180,
             )
             if packed.exit_code:

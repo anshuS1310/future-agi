@@ -200,3 +200,28 @@ def test_the_ledger_is_read_before_the_only_delete_that_exists(monkeypatch):
     driver._delete_and_record(_Attempt())
 
     assert order == ["read_spend", "delete"]
+
+
+def test_the_authoring_archive_does_not_carry_a_previous_run_s_bill():
+    """A reuse run restores the authoring archive instead of authoring, so a bill left inside it is
+    read back as though this run had spent it.
+
+    Measured before this: three runs reported total_usd 3.533797 with identical token counts to the
+    last token (build-environment 636406, understand-agent 1323174, validate-source-data 2226074,
+    write-scenarios 409913), and the restored files were stamped 19:12 and 19:17 UTC, which is the
+    FIRST run's authoring window. Every later run was reporting money it never spent.
+    """
+    import inspect
+
+    from simulate.services import hosted_harness_gateway as gateway
+
+    source = inspect.getsource(gateway)
+    pack = source[source.index("tar -czf /tmp/authoring.tar.gz") :][:400]
+
+    assert "--exclude=./cost.json" in pack, (
+        "cost.json must be kept out of the reusable archive, or every reuse re-reports the "
+        "first run's authoring bill"
+    )
+    # The rest of the directory is still packed whole: the guest decides what a saved world is.
+    assert "--exclude=./environment-bundle" in pack
+    assert "--exclude=__pycache__" in pack

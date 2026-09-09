@@ -25,14 +25,8 @@ from requests.exceptions import ChunkedEncodingError, ConnectionError, RequestEx
 logger = structlog.get_logger(__name__)
 from tfc.settings.settings import MINIO_URL, UPLOAD_BUCKET_NAME
 from tfc.utils.error_codes import get_error_message
-from tfc.utils.ssrf_guard import SsrfBlocked, SsrfResponse, safe_fetch
-from tfc.utils.storage_client import (
-    ensure_bucket,
-    get_object_url,
-    get_storage_client,
-    own_storage_object,
-    read_object_bytes,
-)
+from tfc.utils.ssrf_guard import SsrfBlocked, safe_fetch
+from tfc.utils.storage_client import ensure_bucket, get_object_url, get_storage_client
 
 MAX_VIDEO_FILE_SIZE = 200 * 1024 * 1024
 # safe_fetch default max_bytes is 25 MiB (a general safety cap); real
@@ -94,31 +88,13 @@ def is_own_storage_url(value, bucket_name):
 
 
 def _ssrf_safe_get(url, *, headers=None, timeout=20, max_bytes=None):
-    """GET a URL, reading our own storage through the storage client and guarding the rest.
+    """SSRF-guarded GET.
 
-    An object in our own bucket is not a remote fetch and does not belong behind the SSRF guard:
-    on the MinIO stack the only server-reachable storage endpoint is a private address by
-    construction, so guarding it means our own recordings can never be read. Reading it by
-    bucket and key instead works the same on S3, GCS and MinIO.
-
-    Everything else still goes through safe_fetch, which is where the guard belongs. SsrfBlocked
-    (permanent rejection: private IP, bad scheme, blocked redirect) propagates unchanged so retry
-    loops can fail fast. Other ValueErrors from safe_fetch (transient network / body-size / bad
-    redirect) become RequestException so existing retry blocks treat them as transient.
+    SsrfBlocked (permanent rejection: private IP, bad scheme, blocked redirect)
+    propagates unchanged so retry loops can catch it and fail fast. Other
+    ValueErrors from safe_fetch (transient network / body-size / bad redirect)
+    become RequestException so existing retry blocks treat them as transient.
     """
-    own = own_storage_object(url)
-    if own is not None:
-        bucket_name, object_key = own
-        try:
-            body = read_object_bytes(bucket_name, object_key)
-        except Exception as e:  # noqa: BLE001 - a missing object is transient to the retry loop
-            raise RequestException(
-                f"storage read failed for {bucket_name}/{object_key}: {e}"
-            ) from e
-        if max_bytes is not None and len(body) > max_bytes:
-            raise ValueError(f"object exceeds maximum size of {max_bytes} bytes")
-        return SsrfResponse(200, {}, body, url)
-
     kwargs = {"method": "GET", "timeout": timeout, "headers": headers}
     if max_bytes is not None:
         kwargs["max_bytes"] = max_bytes

@@ -632,17 +632,14 @@ DEAD_AIR_DETECTION = '''def evaluate(input, output, expected, context, **kwargs)
         dead_air_threshold: float, max acceptable % of dead air (default 20.0)
         gap_threshold_ms: float, max acceptable single silence gap in ms (default 3000)
     """
-    # Not measuring is not the same as measuring badly. A 0.0 here renders as Failed against the
-    # 0.5 pass threshold, which is indistinguishable from a call that really was full of dead air.
-    # Raising records the eval as errored, with the cause, and leaves the verdict unclaimed.
     err = kwargs.get("_dead_air_error")
     if err:
-        raise ValueError(f"Dead air could not be measured: {err}")
+        return {"score": 0.0, "reason": f"Dead air analysis unavailable: {err}"}
 
     dead_air_pct = kwargs.get("_dead_air_percentage")
     max_gap_ms = kwargs.get("_dead_air_max_gap_ms")
     if dead_air_pct is None or max_gap_ms is None:
-        raise ValueError("Dead air could not be measured: preprocessing did not run")
+        return {"score": 0.0, "reason": "Dead air analysis unavailable: preprocessing did not run"}
 
     try:
         dead_air_threshold = float(kwargs.get("dead_air_threshold", 20.0))

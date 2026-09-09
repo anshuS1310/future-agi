@@ -33,6 +33,7 @@ from simulate.models import (
     HostedHarnessReceipt,
     HostedHarnessScenario,
     HostedHarnessStageOutput,
+    TestExecution,
 )
 
 
@@ -721,6 +722,21 @@ class DaytonaHarnessProvider:
                     "updated_at",
                 ]
             )
+
+            # A saved-suite rerun reuses the registered TestExecution and its
+            # CallExecution rows. Reopen the execution as part of the same
+            # transaction so clients resume polling while terminal receipts
+            # replace the previous attempt's rows. Leaving it COMPLETED makes
+            # the call-details grid look frozen even though the hosted guest is
+            # actively executing calls.
+            if job.test_execution_id:
+                TestExecution.objects.filter(id=job.test_execution_id).update(
+                    status=TestExecution.ExecutionStatus.RUNNING,
+                    started_at=timezone.now(),
+                    completed_at=None,
+                    completed_calls=0,
+                    failed_calls=0,
+                )
 
         retry_cfg = payload["retry"]
         try:

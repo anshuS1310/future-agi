@@ -10,7 +10,7 @@ from django.test import override_settings
 from rest_framework.response import Response
 from rest_framework.test import APIClient
 
-from simulate.models import RunTest
+from simulate.models import RunTest, TestExecution
 from simulate.serializers.harness_job import (
     HarnessJobCreateSerializer,
     HarnessPreflightSerializer,
@@ -714,13 +714,34 @@ def test_daytona_saved_rerun_reuses_job_and_starts_fresh_attempt_cycle(user, wor
     job.completed_count = 10
     job.terminal_at = job.created_at
     job.scenario_count = 2
+    run_test = RunTest.objects.create(
+        name="Saved hosted run",
+        organization=user.organization,
+        workspace=workspace,
+    )
+    test_execution = TestExecution.objects.create(
+        run_test=run_test,
+        status=TestExecution.ExecutionStatus.COMPLETED,
+        total_scenarios=2,
+        total_calls=2,
+        completed_calls=2,
+        failed_calls=0,
+        completed_at=job.created_at,
+    )
+    job.run_test = run_test
+    job.test_execution = test_execution
     payload = dict(job.payload)
     payload["scenario_count"] = 1
+    payload.setdefault("metadata", {})["authoring_object_key"] = (
+        "harness/jobs/saved/authoring.tar.gz"
+    )
     job.payload = payload
     job.save(
         update_fields=[
             "payload",
             "scenario_count",
+            "run_test",
+            "test_execution",
             "state",
             "current_stage",
             "current_attempt_number",
@@ -747,6 +768,11 @@ def test_daytona_saved_rerun_reuses_job_and_starts_fresh_attempt_cycle(user, wor
     assert job.terminal_at is None
     assert job.payload["metadata"]["attempt_cycle_start"] == 4
     assert job.payload["scenario_count"] == 2
+    test_execution.refresh_from_db()
+    assert test_execution.status == TestExecution.ExecutionStatus.RUNNING
+    assert test_execution.completed_at is None
+    assert test_execution.completed_calls == 0
+    assert test_execution.failed_calls == 0
     livekit_ref = job.payload["agent"]["secret_refs"]["LIVEKIT_URL"]
     assert livekit_ref["manager"] == "platform-vault"
     assert "customer.example.test" not in json.dumps(job.payload)

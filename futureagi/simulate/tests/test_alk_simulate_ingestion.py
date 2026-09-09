@@ -1007,6 +1007,77 @@ class TestResultIngest:
         assert cmd.get("total_tokens") == 1500
         assert cmd.get("input_tokens") is None
 
+    def test_retell_result_resolves_speaker_roles_through_the_retell_maps(
+        self, auth_client, run_test
+    ):
+        """A hosted Retell result stores provider_call_data['retell']; the transcript
+        the UI renders must resolve through the Retell maps, not fall back to VAPI
+        with an unknown-provider error. Direction defaults to outbound."""
+        from simulate.serializers.test_execution import (
+            CallExecutionDetailSerializer,
+        )
+        from simulate.utils.speaker_roles import SpeakerRoleResolver
+        from tracer.models.observability_provider import ProviderChoices
+
+        _, call_ids = _start_and_batch(auth_client, run_test)
+        call_id = call_ids[0]
+        resp = auth_client.patch(
+            f"{ALK_BASE}/call-executions/{call_id}/result/",
+            {
+                "status": "completed",
+                "transcript": _transcript_payload(),
+                "provider_call_data": {"retell": {"call_id": "call_abc"}},
+            },
+            format="json",
+        )
+        assert resp.status_code == 200, resp.content
+        call = CallExecution.objects.get(id=call_id)
+        assert (
+            SpeakerRoleResolver.detect_provider(call.provider_call_data)
+            == ProviderChoices.RETELL
+        )
+        with patch("simulate.utils.speaker_roles.logger") as resolver_log:
+            rows = CallExecutionDetailSerializer(
+                context={"detail_mode": True}
+            ).get_transcript(call)
+        resolver_log.error.assert_not_called()
+        # Outbound: the tested agent speaks as "assistant", the simulator as "user".
+        assert [row["speaker_role"] for row in rows] == ["user", "assistant", "user"]
+
+    def test_retell_inbound_result_swaps_speaker_roles(self, auth_client, run_test):
+        """Same hosted Retell result, inbound direction: the simulator placed the
+        call, so the raw 'assistant' turns are the simulator and 'user' turns are
+        the tested agent. The Retell inbound map must do the swap."""
+        from simulate.serializers.test_execution import (
+            CallExecutionDetailSerializer,
+        )
+
+        _, call_ids = _start_and_batch(auth_client, run_test)
+        call_id = call_ids[0]
+        resp = auth_client.patch(
+            f"{ALK_BASE}/call-executions/{call_id}/result/",
+            {
+                "status": "completed",
+                "transcript": _transcript_payload(),
+                "provider_call_data": {"retell": {"call_id": "call_abc"}},
+            },
+            format="json",
+        )
+        assert resp.status_code == 200, resp.content
+        call = CallExecution.objects.get(id=call_id)
+        call.call_metadata = {**(call.call_metadata or {}), "call_direction": "inbound"}
+        call.save(update_fields=["call_metadata"])
+        with patch("simulate.utils.speaker_roles.logger") as resolver_log:
+            rows = CallExecutionDetailSerializer(
+                context={"detail_mode": True}
+            ).get_transcript(call)
+        resolver_log.error.assert_not_called()
+        assert [row["speaker_role"] for row in rows] == [
+            "assistant",
+            "user",
+            "assistant",
+        ]
+
     def test_reingest_preserves_csat(self, auth_client, run_test):
         _, call_ids = _start_and_batch(auth_client, run_test)
         call_id = call_ids[0]

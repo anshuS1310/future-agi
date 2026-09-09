@@ -241,21 +241,31 @@ fsspec==2025.10.0
     # via huggingface-hub
 google-api-core==2.29.0
     # via
+    #   google-api-python-client
     #   google-cloud-aiplatform
     #   google-cloud-bigquery
     #   google-cloud-core
+    #   google-cloud-pubsub
     #   google-cloud-resource-manager
     #   google-cloud-storage
+google-api-python-client==2.200.0
+    # via core-backend
 google-auth==2.47.0
     # via
     #   anthropic
+    #   core-backend
     #   google-api-core
+    #   google-api-python-client
+    #   google-auth-httplib2
     #   google-cloud-aiplatform
     #   google-cloud-bigquery
     #   google-cloud-core
+    #   google-cloud-pubsub
     #   google-cloud-resource-manager
     #   google-cloud-storage
     #   google-genai
+google-auth-httplib2==0.4.2
+    # via google-api-python-client
 google-cloud-aiplatform==1.133.0
     # via
     #   core-backend
@@ -266,6 +276,8 @@ google-cloud-core==2.5.0
     # via
     #   google-cloud-bigquery
     #   google-cloud-storage
+google-cloud-pubsub==2.39.2
+    # via core-backend
 google-cloud-resource-manager==1.15.0
     # via google-cloud-aiplatform
 google-cloud-storage==3.8.0
@@ -295,10 +307,13 @@ granian==2.6.1
 greenlet==3.3.0 ; platform_machine == 'AMD64' or platform_machine == 'WIN32' or platform_machine == 'aarch64' or platform_machine == 'amd64' or platform_machine == 'ppc64le' or platform_machine == 'win32' or platform_machine == 'x86_64'
     # via sqlalchemy
 grpc-google-iam-v1==0.14.3
-    # via google-cloud-resource-manager
+    # via
+    #   google-cloud-pubsub
+    #   google-cloud-resource-manager
 grpcio==1.76.0
     # via
     #   google-api-core
+    #   google-cloud-pubsub
     #   google-cloud-resource-manager
     #   googleapis-common-protos
     #   grpc-google-iam-v1
@@ -309,7 +324,9 @@ grpcio==1.76.0
 grpcio-health-checking==1.76.0
     # via django-socio-grpc
 grpcio-status==1.76.0
-    # via google-api-core
+    # via
+    #   google-api-core
+    #   google-cloud-pubsub
 grpcio-tools==1.76.0
     # via django-socio-grpc
 h11==0.16.0
@@ -320,6 +337,10 @@ hf-xet==1.2.0 ; platform_machine == 'aarch64' or platform_machine == 'amd64' or 
     # via huggingface-hub
 httpcore==1.0.9
     # via httpx
+httplib2==0.32.0
+    # via
+    #   google-api-python-client
+    #   google-auth-httplib2
 httpx==0.28.1
     # via
     #   anthropic
@@ -466,6 +487,7 @@ opentelemetry-api==1.39.1
     # via
     #   core-backend
     #   fi-instrumentation-otel
+    #   google-cloud-pubsub
     #   langfuse
     #   opentelemetry-exporter-otlp-proto-grpc
     #   opentelemetry-exporter-otlp-proto-http
@@ -579,6 +601,7 @@ opentelemetry-sdk==1.39.1
     # via
     #   core-backend
     #   fi-instrumentation-otel
+    #   google-cloud-pubsub
     #   langfuse
     #   opentelemetry-exporter-otlp-proto-grpc
     #   opentelemetry-exporter-otlp-proto-http
@@ -659,12 +682,14 @@ proto-plus==1.27.0
     # via
     #   google-api-core
     #   google-cloud-aiplatform
+    #   google-cloud-pubsub
     #   google-cloud-resource-manager
-protobuf==6.33.4
+protobuf==6.33.6
     # via
     #   core-backend
     #   google-api-core
     #   google-cloud-aiplatform
+    #   google-cloud-pubsub
     #   google-cloud-resource-manager
     #   googleapis-common-protos
     #   grpc-google-iam-v1
@@ -726,6 +751,8 @@ pyopenssl==26.0.0
     #   webauthn
 pyotp==2.9.0
     # via core-backend
+pyparsing==3.3.2
+    # via httplib2
 pypdf==6.6.0
     # via core-backend
 pypdfium2==5.6.0
@@ -811,7 +838,7 @@ requests==2.32.5
     #   tiktoken
 requests-toolbelt==1.0.0
     # via langsmith
-restrictedpython==8.1
+restrictedpython==8.5
     # via core-backend
 retrying==1.4.2
     # via core-backend
@@ -976,7 +1003,9 @@ tzlocal==5.3.1
     #   celery
     #   clickhouse-driver
 uritemplate==4.2.0
-    # via drf-yasg
+    # via
+    #   drf-yasg
+    #   google-api-python-client
 urllib3==2.6.3
     # via
     #   botocore

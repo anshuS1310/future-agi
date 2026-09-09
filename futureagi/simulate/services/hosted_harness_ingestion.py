@@ -930,9 +930,8 @@ def _receipt_evaluations(body: dict[str, Any]) -> list[dict[str, Any]]:
     for goal in body.get("sub_goals") or []:
         if not isinstance(goal, dict) or not goal.get("name"):
             continue
-        # A null verdict means nothing decided this sub-goal, which is not the same as
-        # deciding against it. Coercing it would publish a failed, reasonless eval for
-        # every check a run never reached. Coverage carries the declared-but-unjudged count.
+        # Nothing decided this sub-goal, which is not the same as deciding against it.
+        # Coercing it would publish a failed, reasonless eval. Coverage carries the count.
         if goal.get("held") is None:
             continue
         results.append(

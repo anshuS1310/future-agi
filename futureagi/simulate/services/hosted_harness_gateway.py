@@ -1532,12 +1532,8 @@ class DaytonaHostedGateway:
             # state.json + manifest.json on newer guests), and an allow-list here silently
             # drops the marker the next reuse needs. Only the sealed bundle is left out: it is
             # large and bundle_author_v2 regenerates it from this directory on every launch.
-            # cost.json is the harness's own bill, not part of a saved world, and it must not
-            # travel with the reusable artefacts. A reuse run restores this archive instead of
-            # authoring, so a bill left inside it is read back as though this run had spent it:
-            # every reuse reported the first run's authoring cost again, identical to the cent and
-            # to the token. Left out, a reuse that authors nothing reports nothing, and one that
-            # extends the suite records only the extra work it really did.
+            # cost.json is this run's bill, not part of a saved world: left in, every reuse
+            # reads the first run's authoring cost back as its own.
             packed = sandbox.process.exec(
                 "cd /work/authoring && tar -czf /tmp/authoring.tar.gz "
                 "--exclude=./environment-bundle --exclude=__pycache__ "
@@ -2133,8 +2129,7 @@ class DaytonaHostedGateway:
         authored_bundle = _json("/work/authoring/environment-bundle/manifest.json")
         scenarios = _json("/work/authoring/scenarios.json")
         bundle = _json("/work/bundle/manifest.json")
-        # What the harness itself spent so far. Read on every poll, so a sandbox deleted later
-        # leaves the last known total on the job rather than taking the whole bill with it.
+        # Read on every poll, so a sandbox deleted later still leaves its last known total.
         spend = _json("/work/authoring/cost.json")
         job = HostedHarnessJob.no_workspace_objects.get(id=attempt.job_id)
         _record_harness_spend(job, spend, attempt.attempt_number)
@@ -2515,8 +2510,7 @@ class DaytonaHostedGateway:
         except DaytonaNotFoundError:
             absent = True
         else:
-            # The last moment the ledger exists. Whatever ended this attempt, the spend so far is
-            # read here, because after the delete below there is nothing left to ask.
+            # The last moment the ledger exists: after the delete there is nothing to ask.
             _read_harness_spend(attempt, sandbox)
             self.client.delete(sandbox, timeout=120, wait=True)
             try:
@@ -2947,8 +2941,7 @@ def _secret_safe(value: Any, *, key: str = "") -> Any:
 def _read_harness_spend(attempt: HostedHarnessAttempt, sandbox) -> None:
     """Record the guest's ledger from a sandbox that is about to go away.
 
-    Guarded to the point of silence: a sandbox must still be deleted if this fails, since a leaked
-    one costs more than the figure it was holding.
+    Silent on failure: a leaked sandbox costs more than the figure it was holding.
     """
     try:
         body = sandbox.fs.download_file("/work/authoring/cost.json").decode("utf-8")
@@ -2963,10 +2956,8 @@ def _record_harness_spend(
 ) -> None:
     """Keep the harness's own cost on the job, per attempt, and total across attempts.
 
-    Kept per attempt because a retry runs in a NEW sandbox whose ledger starts at zero: one
-    growing-only total would hold the largest attempt rather than the bill, and every retried run
-    would be under-charged. Within an attempt the figure only grows, so a half-written or reset
-    ledger cannot erase what an earlier poll already saw.
+    Per attempt because a retry's ledger starts at zero, so attempts are summed rather than
+    maxed. Within an attempt the figure only grows, so a reset ledger cannot erase an earlier read.
     """
     if not isinstance(spend, dict):
         return

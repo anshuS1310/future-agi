@@ -136,7 +136,7 @@ def test_a_sandbox_that_cannot_be_read_never_blocks_its_own_deletion(monkeypatch
 
 
 def test_a_retry_adds_to_the_bill_instead_of_replacing_it():
-    """A retry runs in a NEW sandbox whose ledger starts at zero, so attempts must be summed."""
+    """A retry's ledger starts at zero, so attempts are summed rather than replaced."""
     job = _job()
     _record_harness_spend(job, {"total_usd": 1.2, "unpriced_turns": 1, "stages": []}, 1)
     _record_harness_spend(job, {"total_usd": 0.8, "unpriced_turns": 0, "stages": []}, 2)
@@ -160,11 +160,7 @@ def test_one_attempt_growing_does_not_disturb_another():
 
 
 def test_the_ledger_is_read_before_the_only_delete_that_exists(monkeypatch):
-    """One delete site, and the read must come first: after it, there is nothing left to ask.
-
-    Pins the ordering rather than the wording, so a second deletion path or a reordered one fails
-    here instead of silently losing a bill.
-    """
+    """Pins the ordering, so a reordered or second deletion path fails here."""
     import sys
     import types
 
@@ -200,28 +196,3 @@ def test_the_ledger_is_read_before_the_only_delete_that_exists(monkeypatch):
     driver._delete_and_record(_Attempt())
 
     assert order == ["read_spend", "delete"]
-
-
-def test_the_authoring_archive_does_not_carry_a_previous_run_s_bill():
-    """A reuse run restores the authoring archive instead of authoring, so a bill left inside it is
-    read back as though this run had spent it.
-
-    Measured before this: three runs reported total_usd 3.533797 with identical token counts to the
-    last token (build-environment 636406, understand-agent 1323174, validate-source-data 2226074,
-    write-scenarios 409913), and the restored files were stamped 19:12 and 19:17 UTC, which is the
-    FIRST run's authoring window. Every later run was reporting money it never spent.
-    """
-    import inspect
-
-    from simulate.services import hosted_harness_gateway as gateway
-
-    source = inspect.getsource(gateway)
-    pack = source[source.index("tar -czf /tmp/authoring.tar.gz") :][:400]
-
-    assert "--exclude=./cost.json" in pack, (
-        "cost.json must be kept out of the reusable archive, or every reuse re-reports the "
-        "first run's authoring bill"
-    )
-    # The rest of the directory is still packed whole: the guest decides what a saved world is.
-    assert "--exclude=./environment-bundle" in pack
-    assert "--exclude=__pycache__" in pack

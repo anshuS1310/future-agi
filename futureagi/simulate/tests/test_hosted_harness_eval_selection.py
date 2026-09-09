@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -103,30 +105,12 @@ def test_the_catalogue_offers_the_family_and_the_numbered_voice_evals(
 
 @pytest.mark.django_db
 def test_dead_air_is_never_offered(organization, workspace):
-    """It measures the recording, not the agent: most silence is caller thinking and transport
-    latency, so the verdict says little about the agent under test."""
+    """Withheld on both modalities, not just filtered out of text."""
     _template("dead_air_detection", ["input_audio"], eval_id=201)
 
     for modality in ("voice", "text"):
         offered = {item["name"] for item in offered_evals(organization, workspace, modality)}
         assert "dead_air_detection" not in offered
-
-
-@pytest.mark.django_db
-def test_the_output_type_fixtures_are_never_offered(organization, workspace):
-    """`customer_agent_single_choice` and its two siblings are fixtures for output types, carrying
-    eval_id 0 and no description. The customer_agent prefix swept them into the catalogue and a
-    guest picked two of them on a real run."""
-    for name in (
-        "customer_agent_single_choice",
-        "customer_agent_multi_choices",
-        "customer_agent_score_with_choices",
-    ):
-        _template(name, ["conversation"], eval_id=0)
-    _template("customer_agent_query_handling", ["conversation"])
-
-    offered = {item["name"] for item in offered_evals(organization, workspace, "voice")}
-    assert offered == {"customer_agent_query_handling"}
 
 
 @pytest.mark.django_db
@@ -141,13 +125,7 @@ def test_a_chat_run_is_not_offered_the_voice_only_evals(organization, workspace)
 
 @pytest.mark.django_db
 def test_the_manifest_decides_three_ways(organization, workspace):
-    """Absent, visible true, and visible false are three different answers.
-
-    A withheld eval keeps its entry so the decision stays legible, rather than looking like one
-    nobody considered.
-    """
-    import json
-
+    """Absent, visible true and visible false are three different answers."""
     from simulate.services.harness_evals import harness_evals_manifest
 
     body = json.loads(harness_evals_manifest().read_text(encoding="utf-8"))
@@ -185,7 +163,7 @@ def test_flipping_a_withheld_eval_to_visible_offers_it(organization, workspace):
 
 @pytest.mark.django_db
 def test_a_row_absent_from_the_manifest_is_never_offered(organization, workspace):
-    """These three exist only in a local database, carry eval_id 0, and a guest selected two."""
+    """A name with no manifest entry is never offered, whatever the database holds."""
     fixtures = [
         "customer_agent_single_choice",
         "customer_agent_multi_choices",
@@ -495,14 +473,10 @@ def test_a_template_with_no_model_still_gets_one(organization, workspace):
 
 
 def test_every_manifest_name_is_a_real_eval_definition():
-    """A typo in the manifest drops an eval silently, since a name matching no template just never
-    appears in the catalogue."""
-    import json
-    from pathlib import Path as _Path
-
+    """A typo drops an eval silently: a name matching no template just never appears."""
     from simulate.services.harness_evals import harness_evals_manifest
 
-    root = _Path(__file__).resolve().parents[2] / "model_hub" / "system_evals"
+    root = Path(__file__).resolve().parents[2] / "model_hub" / "system_evals"
     defined = {path.stem for path in root.rglob("*.yaml")}
     manifest = json.loads(harness_evals_manifest().read_text(encoding="utf-8"))
     entries = manifest["evals"] if isinstance(manifest, dict) else manifest

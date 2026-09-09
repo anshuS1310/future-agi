@@ -93,8 +93,8 @@ export const canStartEndToEndRun = ({
   uploadingSecretFile,
 }) => hasSource && !submitting && !checking && !uploadingSecretFile;
 
-// Blank, whitespace and 0 all mean "leave it alone": the run keeps whatever the contract derived,
-// so an agent whose calls are legitimately long is not silently held to a shorter default.
+// Blank, whitespace and 0 all mean "leave it alone", so the run keeps whatever the contract
+// derived rather than being held to a shorter default.
 export const callLimitConfig = (value) =>
   String(value ?? "").trim() && Number(value) > 0
     ? { voice_call_timeout_seconds: Number(value) }
@@ -204,8 +204,7 @@ export default function HarnessCreate() {
   const [providerTargetId, setProviderTargetId] = useState("");
   const [providerDynamicVariables, setProviderDynamicVariables] = useState("");
   const [scenarioCount, setScenarioCount] = useState(10);
-  // Per call, not per run. Left blank the run keeps whatever the contract derived, so an
-  // agent whose calls are known to be long is not silently held to a shorter default.
+  // Per call, not per run. See callLimitConfig above.
   const [callTimeoutSeconds, setCallTimeoutSeconds] = useState("");
   const [preflight, setPreflight] = useState(null);
   // Shown beside the Preflight button: the general error banner sits at the foot of the

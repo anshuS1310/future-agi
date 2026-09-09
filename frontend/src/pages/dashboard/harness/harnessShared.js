@@ -4,12 +4,10 @@ import { STATUS_TYPES } from "src/utils/statusUtils";
 
 export const terminalStages = new Set(["completed", "failed", "canceled"]);
 
-// The ordered pipeline. Ordered by when the runner actually reaches each stage, which is not
-// the declaration order of HarnessStage in the ALK wheel (fi/alk/harness/job.py): the runner
-// validates the environment after the scenarios exist, because that validation runs their
-// reference solutions. Listing it in enum order made the checklist rewind, ticking scenario
-// stages green and then back to pending. This is the same divergence already noted below for
-// cleaning_up and uploading_artifacts.
+// The ordered pipeline, by when the runner reaches each stage rather than by the declaration
+// order of HarnessStage in the ALK wheel (fi/alk/harness/job.py): validating_environment runs
+// after the scenarios exist, because it proves their reference solutions. In enum order the
+// checklist rewinds. Same divergence as cleaning_up and uploading_artifacts below.
 // "failed" and "canceled" are outcomes rather than positions, so they stay out: a stage
 // missing from this list indexes to -1, which strands the checklist showing nothing reached
 // and pins the progress bar at its 2% floor.
@@ -44,10 +42,8 @@ export const eventTime = (value) => {
 // event covers four UI stages. Six stages (building/validating environment, generating data,
 // validating scenarios, connecting agent, grading) are never emitted at all, so they can only
 // be credited through the group they belong to.
-// `validating_environment` runs AFTER the scenarios exist: it freezes a baseline of the world
-// and proves each scenario's reference solution against it, so its failures name scenarios. Filed
-// under environment it makes both groupings move backwards mid-run, which drags the reader off the
-// Scenarios tab and back into a tab that had already finished.
+// `validating_environment` is grouped with scenarios, not environment: its failures name
+// scenarios, and grouping it under environment sends the working tab backwards mid-run.
 const EVENT_STAGE_GROUPS = {
   understand: ["understanding_agent"],
   environment: [

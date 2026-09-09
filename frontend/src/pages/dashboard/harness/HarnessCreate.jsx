@@ -95,6 +95,12 @@ export const canStartEndToEndRun = ({
   uploadingSecretFile,
 }) => hasSource && !submitting && !checking && !uploadingSecretFile;
 
+// Blank, whitespace and 0 all mean "leave it alone", so the run keeps the 300 second default.
+export const callLimitConfig = (value) =>
+  String(value ?? "").trim() && Number(value) > 0
+    ? { voice_call_timeout_seconds: Number(value) }
+    : {};
+
 const providerCredentialName = (connector) =>
   connector === "vapi"
     ? "VAPI_API_KEY"
@@ -206,6 +212,8 @@ export default function HarnessCreate() {
   const [providerTargetId, setProviderTargetId] = useState("");
   const [providerDynamicVariables, setProviderDynamicVariables] = useState("");
   const [scenarioCount, setScenarioCount] = useState(10);
+  // Per call, not per run. See callLimitConfig above.
+  const [callTimeoutSeconds, setCallTimeoutSeconds] = useState("");
   const [preflight, setPreflight] = useState(null);
   // Shown beside the Preflight button: the general error banner sits at the foot of the
   // form, out of view when the button is what was clicked.
@@ -339,6 +347,7 @@ export default function HarnessCreate() {
       config: {
         ...partitionConfigurationValues(configurationValues)
           .configurationValues,
+        ...callLimitConfig(callTimeoutSeconds),
         ...(connector === "vapi" && providerMode === "connect_only"
           ? { assistant_id: providerTargetId.trim() }
           : {}),
@@ -1524,6 +1533,29 @@ export default function HarnessCreate() {
                     Each scenario is one generated conversation the agent is put
                     through, then graded. More scenarios means broader coverage
                     and a longer run.
+                  </Typography>
+                </Stack>
+                <Stack
+                  direction={{ xs: "column", sm: "row" }}
+                  spacing={1.5}
+                  alignItems={{ sm: "center" }}
+                  sx={{ mt: 2 }}
+                >
+                  <TextField
+                    size="small"
+                    label="Call limit (seconds)"
+                    type="number"
+                    value={callTimeoutSeconds}
+                    onChange={(event) =>
+                      setCallTimeoutSeconds(event.target.value)
+                    }
+                    inputProps={{ min: 30, max: 3600 }}
+                    placeholder="300"
+                    sx={{ width: 180, flexShrink: 0 }}
+                  />
+                  <Typography variant="caption" color="text.secondary">
+                    Blank uses the default, 300 seconds. A call stopped at the
+                    limit has no closing turn.
                   </Typography>
                 </Stack>
               </Section>

@@ -1535,9 +1535,12 @@ class DaytonaHostedGateway:
             # state.json + manifest.json on newer guests), and an allow-list here silently
             # drops the marker the next reuse needs. Only the sealed bundle is left out: it is
             # large and bundle_author_v2 regenerates it from this directory on every launch.
+            # cost.json is this run's bill, not part of a saved world: left in, every reuse
+            # reads the first run's authoring cost back as its own.
             packed = sandbox.process.exec(
                 "cd /work/authoring && tar -czf /tmp/authoring.tar.gz "
-                "--exclude=./environment-bundle --exclude=__pycache__ .",
+                "--exclude=./environment-bundle --exclude=__pycache__ "
+                "--exclude=./cost.json .",
                 timeout=180,
             )
             if packed.exit_code:
@@ -2153,7 +2156,10 @@ class DaytonaHostedGateway:
         authored_bundle = _json("/work/authoring/environment-bundle/manifest.json")
         scenarios = _json("/work/authoring/scenarios.json")
         bundle = _json("/work/bundle/manifest.json")
+        # Read on every poll, so a sandbox deleted later still leaves its last known total.
+        spend = _json("/work/authoring/cost.json")
         job = HostedHarnessJob.no_workspace_objects.get(id=attempt.job_id)
+        _record_harness_spend(job, spend, attempt.attempt_number)
 
         # Unified hosted execution authors the contract/world/scenarios in the same
         # sandbox that later runs the calls.  Freeze those inputs as soon as Bundle V2
@@ -2600,6 +2606,8 @@ class DaytonaHostedGateway:
         except DaytonaNotFoundError:
             absent = True
         else:
+            # The last moment the ledger exists: after the delete there is nothing to ask.
+            _read_harness_spend(attempt, sandbox)
             self.client.delete(sandbox, timeout=120, wait=True)
             try:
                 self.client.get(
@@ -3027,6 +3035,60 @@ def _secret_safe(value: Any, *, key: str = "") -> Any:
     if isinstance(value, (str, int, float, bool)) or value is None:
         return value
     return str(value)
+
+
+def _read_harness_spend(attempt: HostedHarnessAttempt, sandbox) -> None:
+    """Record the guest's ledger from a sandbox that is about to go away.
+
+    Silent on failure: a leaked sandbox costs more than the figure it was holding.
+    """
+    try:
+        body = sandbox.fs.download_file("/work/authoring/cost.json").decode("utf-8")
+        job = HostedHarnessJob.no_workspace_objects.get(id=attempt.job_id)
+        _record_harness_spend(job, json.loads(body), attempt.attempt_number)
+    except Exception:  # noqa: BLE001 - no ledger is the ordinary case for an early failure
+        logger.debug("no harness ledger to read attempt=%s", attempt.id)
+
+
+def _record_harness_spend(
+    job: HostedHarnessJob, spend: Any, attempt_number: int = 1
+) -> None:
+    """Keep the harness's own cost on the job, per attempt, and total across attempts.
+
+    Per attempt because a retry's ledger starts at zero, so attempts are summed rather than
+    maxed. Within an attempt the figure only grows, so a reset ledger cannot erase an earlier read.
+    """
+    if not isinstance(spend, dict):
+        return
+    try:
+        total = float(spend.get("total_usd") or 0.0)
+    except (TypeError, ValueError):
+        return
+    payload = dict(job.payload or {})
+    metadata = dict(payload.get("metadata") or {})
+    recorded = metadata.get("harness_spend")
+    attempts = dict((recorded or {}).get("attempts") or {}) if isinstance(recorded, dict) else {}
+    key = str(int(attempt_number or 1))
+    mine = attempts.get(key)
+    if isinstance(mine, dict):
+        try:
+            if float(mine.get("total_usd") or 0.0) > total:
+                return
+        except (TypeError, ValueError):
+            pass
+    attempts[key] = {
+        "total_usd": round(total, 6),
+        "unpriced_turns": int(spend.get("unpriced_turns") or 0),
+        "stages": spend.get("stages") or [],
+    }
+    metadata["harness_spend"] = {
+        "total_usd": round(sum(float(one.get("total_usd") or 0.0) for one in attempts.values()), 6),
+        "unpriced_turns": sum(int(one.get("unpriced_turns") or 0) for one in attempts.values()),
+        "attempts": attempts,
+    }
+    payload["metadata"] = metadata
+    job.payload = payload
+    job.save(update_fields=["payload", "updated_at"])
 
 
 def authoring_stage_outputs(

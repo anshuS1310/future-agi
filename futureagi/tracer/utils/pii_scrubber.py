@@ -17,10 +17,32 @@ logger = structlog.get_logger(__name__)
 # ---------------------------------------------------------------------------
 # Lazy singleton initialisation — engines are created on first use so that
 # import-time failures don't block startup when Presidio/spaCy isn't installed.
+#
+# ``_INIT_FAILED`` is a process-lifetime latch.  Because batch ingestion fails
+# closed when the engines are unavailable, the latch is only set for failures
+# that cannot resolve without a rebuild/restart (see ``_is_permanent_init_error``).
+# Anything else (OOM during model load, transient file contention, ...) is
+# retried on the next call instead of turning into a per-worker outage.
 # ---------------------------------------------------------------------------
 _analyzer = None
 _anonymizer = None
 _INIT_FAILED = False
+
+# spaCy's error code for "model package not installed / not a valid path".
+_SPACY_MISSING_MODEL_CODE = "E050"
+
+
+def _is_permanent_init_error(exc: BaseException) -> bool:
+    """Return True for engine-init failures that will never succeed in this process.
+
+    * ``ImportError`` — presidio / spaCy not installed (``pii`` extra missing).
+    * spaCy ``OSError`` E050 — the ``en_core_web_sm`` model package is absent.
+    """
+    if isinstance(exc, ImportError):
+        return True
+    if isinstance(exc, OSError) and _SPACY_MISSING_MODEL_CODE in str(exc):
+        return True
+    return False
 
 
 def _ensure_engines() -> bool:
@@ -55,16 +77,27 @@ def _ensure_engines() -> bool:
             "models": [{"lang_code": "en", "model_name": "en_core_web_sm"}],
         }
         nlp_engine = NlpEngineProvider(nlp_configuration=nlp_config).create_engine()
-        _analyzer = AnalyzerEngine(nlp_engine=nlp_engine)
-        _analyzer.registry.add_recognizer(api_key_recognizer)
-        _anonymizer = AnonymizerEngine()
-
-        logger.info("pii_scrubber_engines_initialized")
-        return True
-    except Exception:
-        _INIT_FAILED = True
-        logger.warning("pii_scrubber_init_failed", exc_info=True)
+        analyzer = AnalyzerEngine(nlp_engine=nlp_engine)
+        analyzer.registry.add_recognizer(api_key_recognizer)
+        anonymizer = AnonymizerEngine()
+    except Exception as exc:
+        permanent = _is_permanent_init_error(exc)
+        if permanent:
+            _INIT_FAILED = True
+        logger.warning(
+            "pii_scrubber_init_failed",
+            permanent=permanent,
+            will_retry=not permanent,
+            exc_info=True,
+        )
         return False
+
+    # Only publish both engines once both initialised, so a failure between
+    # the two can never leave a half-initialised singleton behind.
+    _analyzer = analyzer
+    _anonymizer = anonymizer
+    logger.info("pii_scrubber_engines_initialized")
+    return True
 
 
 # ---------------------------------------------------------------------------

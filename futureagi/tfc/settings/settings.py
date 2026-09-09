@@ -692,11 +692,25 @@ HOSTED_RUNNER_VOICE_ENABLED = os.getenv(
     "HOSTED_RUNNER_VOICE_ENABLED", "false"
 ).lower() in ("true", "1", "yes")
 
-# Rollback lever for sequential reuse of the leased simulator room (D10):
-# default on, flip off if reuse misbehaves at runtime without a redeploy.
+# Sequential reuse of one leased simulator room across a multi-row phone run
+# (D10). Default OFF: only a runner whose simulator kit serves multiple
+# personas over a reused room can honour it; the released kit rejects such a
+# job at SDK hydration. Turn it on by env once that kit image is deployed and
+# verified, not before.
 HOSTED_RUNNER_LEASED_ROOM_REUSE = os.getenv(
-    "HOSTED_RUNNER_LEASED_ROOM_REUSE", "true"
+    "HOSTED_RUNNER_LEASED_ROOM_REUSE", "false"
 ).lower() in ("true", "1", "yes")
+
+# Admission ceilings for the leased-room phone path (the target dials our one
+# scarce leased number, so cases run strictly serially and hold that number
+# for the whole run). Refuse a run before any number is leased when it would
+# reserve too many cases or too much wall-clock. 0 disables that limit.
+HOSTED_RUNNER_LEASED_ROOM_MAX_CASES = int(
+    os.getenv("HOSTED_RUNNER_LEASED_ROOM_MAX_CASES", "25")
+)
+HOSTED_RUNNER_LEASED_ROOM_MAX_WALLCLOCK_SECONDS = int(
+    os.getenv("HOSTED_RUNNER_LEASED_ROOM_MAX_WALLCLOCK_SECONDS", str(4 * 60 * 60))
+)
 
 # Structured logging configuration with django-structlog
 # This provides:

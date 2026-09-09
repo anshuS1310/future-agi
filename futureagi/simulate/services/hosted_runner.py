@@ -44,6 +44,43 @@ _JOB_SCHEMA_VERSION = "futureagi.runner-job.v1"
 # at the previous hard 120s.
 _DEFAULT_MAX_CALL_MINUTES = 30
 
+# Per-case overheads shared by the deadline computation and the leased-room
+# admission estimate, so both read the same numbers.
+_CONNECT_TIMEOUT_SECONDS = 60.0
+_READINESS_TIMEOUT_SECONDS = 120.0
+_BASE_CLEANUP_SECONDS = 30.0
+
+
+def _max_seconds_for(max_call_minutes: int) -> float:
+    """The per-call hard ceiling in seconds (never below 120)."""
+    return float(max(120, int(max_call_minutes or _DEFAULT_MAX_CALL_MINUTES) * 60))
+
+
+def _fixed_overhead_seconds() -> float:
+    """Per-case connect + readiness + child slack, shared by the deadline math
+    and the leased-room estimate so they cannot drift apart."""
+    return _CONNECT_TIMEOUT_SECONDS + _READINESS_TIMEOUT_SECONDS + 60.0
+
+
+def _leased_overhead_seconds() -> float:
+    """A leased-room case also pays the room drain's connect timeout."""
+    return _fixed_overhead_seconds() + _CONNECT_TIMEOUT_SECONDS
+
+
+def _leased_room_run_seconds(case_count: int, max_seconds: float) -> float:
+    """Estimated wall-clock a leased-room run reserves the single leased number.
+
+    Cases on one leased number run strictly serially, each paying the call
+    ceiling plus the fixed connect/readiness overhead and the room drain, so
+    the run holds the number for about ``N * (max_seconds + overhead)``. This
+    mirrors the leased-room branch of :func:`_voice_params` and the child's own
+    outer deadline.
+    """
+    return (
+        case_count * (max_seconds + _leased_overhead_seconds())
+        + _BASE_CLEANUP_SECONDS
+    )
+
 
 class ConversationDirection(StrEnum):
     """Who opens a hosted voice conversation. The value is the wire string the
@@ -500,6 +537,46 @@ def _leased_room_reuse_enabled() -> bool:
     return bool(getattr(settings, "HOSTED_RUNNER_LEASED_ROOM_REUSE", False))
 
 
+def _positive_setting(name: str, default: int) -> int:
+    """A non-negative admission limit from settings; a bad value falls back to
+    the default, and 0 disables the limit."""
+    try:
+        value = int(getattr(settings, name, default))
+    except (TypeError, ValueError):
+        return default
+    return value if value >= 0 else default
+
+
+def _enforce_leased_room_admission(case_count: int, *, max_call_minutes: int) -> None:
+    """Refuse a leased-room phone run that would hold the one scarce leased
+    number for too many cases or too much wall-clock, before any number is
+    leased. Either limit set to 0 disables that check.
+    """
+    max_cases = _positive_setting("HOSTED_RUNNER_LEASED_ROOM_MAX_CASES", 25)
+    if max_cases and case_count > max_cases:
+        raise HostedRunnerBuildError(
+            f"phone simulation selected {case_count} scenario rows but a leased-"
+            f"number run is capped at {max_cases}; split it into smaller runs "
+            "or raise HOSTED_RUNNER_LEASED_ROOM_MAX_CASES"
+        )
+    max_wallclock = _positive_setting(
+        "HOSTED_RUNNER_LEASED_ROOM_MAX_WALLCLOCK_SECONDS", 4 * 60 * 60
+    )
+    if max_wallclock:
+        estimated = _leased_room_run_seconds(
+            case_count, _max_seconds_for(max_call_minutes)
+        )
+        if estimated > max_wallclock:
+            raise HostedRunnerBuildError(
+                f"phone simulation would hold the leased number about "
+                f"{int(estimated // 60)} min ({case_count} rows at "
+                f"{max_call_minutes} min each), over the "
+                f"{int(max_wallclock // 60)} min cap; reduce the row count or "
+                "the per-call ceiling, or raise "
+                "HOSTED_RUNNER_LEASED_ROOM_MAX_WALLCLOCK_SECONDS"
+            )
+
+
 def _build_voice_job(
     *,
     mode: str,
@@ -529,8 +606,8 @@ def _build_voice_job(
     # originator) serves one scenario per leased room; a multi-scenario run
     # is refused unless reuse is switched on (D10).
     originator = _provider_profile(provider)["sip_inbound_originator"]
-    if transport_kind == "sip_inbound" and originator and len(dataset) > 1:
-        if not _leased_room_reuse_enabled():
+    if transport_kind == "sip_inbound" and originator:
+        if len(dataset) > 1 and not _leased_room_reuse_enabled():
             raise HostedRunnerBuildError(
                 f"phone simulation selected {len(dataset)} scenario rows but "
                 "this runner serves one scenario per leased number; select a "
@@ -538,6 +615,13 @@ def _build_voice_job(
                 "on a runner whose simulator kit supports sequential room "
                 "reuse"
             )
+        # The whole run holds the one scarce leased number for its full
+        # wall-clock, so bound it before any number is leased (D15 dropped the
+        # old flat ceilings; these replace them with settings-tunable ones).
+        _enforce_leased_room_admission(
+            len(dataset),
+            max_call_minutes=_max_call_minutes(simulator_agent),
+        )
 
     secret_env: list[dict[str, Any]] = []
     agent_def, target_secret = _voice_agent_definition(
@@ -1053,25 +1137,23 @@ def _voice_params(
         1 if is_telephony else max(1, min(int(max_concurrency or 1), case_count))
     )
 
-    connect_timeout = 60.0
-    readiness_timeout = 120.0
-    base_cleanup = 30.0
+    connect_timeout = _CONNECT_TIMEOUT_SECONDS
+    readiness_timeout = _READINESS_TIMEOUT_SECONDS
+    base_cleanup = _BASE_CLEANUP_SECONDS
     # A conversation runs until it ends naturally (min turns + quiet, provider
     # disconnect); ``max_seconds`` is only the hard ceiling. Use the simulator's
     # configured call duration (native default 30 min) — the old flat 120s
     # ceiling cut real calls off at ~2 minutes.
-    max_seconds = float(
-        max(120, int(max_call_minutes or _DEFAULT_MAX_CALL_MINUTES) * 60)
-    )
+    max_seconds = _max_seconds_for(max_call_minutes)
 
     # The child sums ``max_seconds + connect + readiness + cleanup + 60`` into
     # its own outer run deadline (child_run_seconds mirrors this). D15: that
     # deadline is the child's budget, not capped against a parent ceiling —
     # the parent derives its timeout from the child's number instead.
-    fixed_overhead = connect_timeout + readiness_timeout + 60.0
+    fixed_overhead = _fixed_overhead_seconds()
     # A leased pool room hosts one case at a time and pays the drain's
     # connect_timeout on top of the usual per-case overhead.
-    leased_overhead = fixed_overhead + connect_timeout
+    leased_overhead = _leased_overhead_seconds()
 
     cleanup_timeout = base_cleanup
     # Cases run in parallel up to ``effective_concurrency``, so the run's

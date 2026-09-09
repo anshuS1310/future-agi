@@ -667,9 +667,21 @@ class CreateRunTestView(APIView):
             )
             agent_version = validated_data.get("agent_version")
             if agent_version:
-                agent_version = AgentVersion.objects.get(
-                    id=agent_version, deleted=False, organization=user_organization
-                )
+                # Pin only a version that belongs to the selected definition —
+                # a same-org version from another agent would let a text agent's
+                # snapshot answer the voice gate and hand the run a foreign
+                # snapshot/credentials.
+                try:
+                    agent_version = AgentVersion.objects.get(
+                        id=agent_version,
+                        deleted=False,
+                        organization=user_organization,
+                        agent_definition=agent_definition,
+                    )
+                except AgentVersion.DoesNotExist:
+                    return self.gm.not_found(
+                        "Agent version not found for the selected agent definition."
+                    )
 
             from simulate.services.hosted_runner import agent_field_for_version
 
@@ -4433,15 +4445,26 @@ class RunTestComponentsUpdateView(APIView):
 
                 if "version" in data:
                     version_id = data["version"]
+                    # Constrain the version to the run's (possibly just-updated)
+                    # definition — a same-org version from another agent must
+                    # not be pinnable here. A definition-less run has no gate to
+                    # bypass, so it keeps the org-only lookup.
+                    version_filters = {
+                        "id": version_id,
+                        "organization": user_organization,
+                        "deleted": False,
+                    }
+                    if run_test.agent_definition_id is not None:
+                        version_filters["agent_definition"] = run_test.agent_definition
                     try:
-                        version = AgentVersion.objects.get(
-                            id=version_id, organization=user_organization, deleted=False
-                        )
+                        version = AgentVersion.objects.get(**version_filters)
                         run_test.agent_version = version
                         new_agent_version = version
                         agent_version_changed = True
                     except AgentVersion.DoesNotExist:
-                        return self.gm.not_found("Agent version not found")
+                        return self.gm.not_found(
+                            "Agent version not found for the selected agent definition."
+                        )
 
                 # Update SimulatorAgent if provided
                 if "simulator_agent_id" in data:

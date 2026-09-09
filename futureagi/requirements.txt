@@ -116,6 +116,8 @@ click-plugins==1.1.1.2
     # via celery
 click-repl==0.3.0
     # via celery
+clickhouse-cityhash==1.0.2.5
+    # via core-backend
 clickhouse-connect==1.1.1
     # via core-backend
 clickhouse-driver==0.2.10
@@ -417,7 +419,9 @@ lxml==6.0.2
     #   python-docx
     #   xmlsec
 lz4==4.4.5
-    # via clickhouse-connect
+    # via
+    #   clickhouse-connect
+    #   core-backend
 markupsafe==3.0.3
     # via jinja2
 marshmallow==3.26.2

@@ -31,8 +31,12 @@ from accounts.models.gcp_marketplace import (
 from accounts.services.gcp_procurement import metric_id_for, resolve_plan
 from accounts.services.gcp_service_control import gcp_service_control
 from ee.usage.services.config import BillingConfig
+from tfc.logging.sentry import capture_message
 
 logger = structlog.get_logger(__name__)
+
+# Longer than the hourly cadence, so a window in flight is never flagged.
+STUCK_PENDING_HOURS = 6
 
 try:
     from ee.usage.models.usage import UsageSummary
@@ -371,6 +375,16 @@ def _add_window(
             metric=dimension,
         )
         return
+    if existing and existing.report_status == GCPUsageReportStatus.REPORTED:
+        # update_or_create below would reset a billed row to PENDING and lose
+        # the record of the charge.
+        logger.error(
+            "gcp_marketplace_usage_window_already_reported",
+            entitlement_id=entitlement.entitlement_id,
+            metric=dimension,
+            window_start=_rfc3339(window_start),
+        )
+        return
 
     operation_id = str(_uuid.uuid4())
 
@@ -410,6 +424,40 @@ def _operation_for(entitlement, checkpoint, metric_id: str, is_float: bool) -> d
     )
 
 
+UNRESOLVED_ALARM = "gcp_marketplace_usage_unresolved"
+
+
+def _alert_unresolved(event: str, entitlement, checkpoints, detail: str) -> None:
+    """Page: these metrics are frozen until someone settles the row.
+
+    An unknown window is never resent, and _last_window_end advances on
+    REPORTED only, so the pair stops billing until then. A log line alone
+    leaves that costing revenue for as long as nobody reads it.
+    """
+    metrics = sorted({checkpoint.metric for checkpoint in checkpoints})
+    logger.error(
+        event,
+        entitlement_id=entitlement.entitlement_id,
+        organization_id=str(entitlement.organization_id),
+        metrics=metrics,
+        windows=len(checkpoints),
+        error=detail,
+    )
+    capture_message(
+        event,
+        level="error",
+        tags={"alarm": UNRESOLVED_ALARM, "entitlement_id": entitlement.entitlement_id},
+        context={
+            "marketplace": {
+                "organization_id": str(entitlement.organization_id),
+                "metrics": metrics,
+                "windows": len(checkpoints),
+                "detail": detail,
+            }
+        },
+    )
+
+
 def _send(entitlement, operations, by_operation, check_errors) -> int:
     """Report the checked operations and record each outcome on its own row."""
     checkpoints = list(by_operation.values())
@@ -425,7 +473,7 @@ def _send(entitlement, operations, by_operation, check_errors) -> int:
         return 0
 
     try:
-        rejected = gcp_service_control.report(
+        outcome = gcp_service_control.report(
             operations, user_labels=_cost_attribution(entitlement)
         )
     except Exception as exc:
@@ -440,27 +488,45 @@ def _send(entitlement, operations, by_operation, check_errors) -> int:
         # resend would charge it twice. Left PENDING: the next run skips it and
         # reconcile_usage surfaces it for a human to settle.
         _mark(checkpoints, GCPUsageReportStatus.PENDING, str(exc))
-        logger.error(
+        _alert_unresolved(
             "gcp_marketplace_usage_report_outcome_unknown",
-            entitlement_id=entitlement.entitlement_id,
-            operations=len(operations),
-            error=str(exc)[:500],
+            entitlement,
+            checkpoints,
+            str(exc)[:500],
         )
         raise
 
-    failed = [by_operation[oid] for oid in rejected if oid in by_operation]
-    reported = [c for oid, c in by_operation.items() if oid not in rejected]
+    failed = [by_operation[oid] for oid in outcome.rejected if oid in by_operation]
+    rest = [c for oid, c in by_operation.items() if oid not in outcome.rejected]
 
     if failed:
         _mark(failed, GCPUsageReportStatus.FAILED, "rejected by Service Control")
+
+    if outcome.outcome_known:
+        reported, unknown = rest, []
+    else:
+        # Google may have billed these inside the same 200, and does not dedupe,
+        # so FAILED would resend and charge twice. Unknown, as a lost response.
+        reported, unknown = [], rest
+
     if reported:
         _mark(reported, GCPUsageReportStatus.REPORTED, "")
+    if unknown:
+        detail = f"unattributed report errors: {outcome.unattributed}"
+        _mark(unknown, GCPUsageReportStatus.PENDING, detail)
+        _alert_unresolved(
+            "gcp_marketplace_usage_report_outcome_unknown",
+            entitlement,
+            unknown,
+            detail,
+        )
 
     logger.info(
         "gcp_marketplace_usage_reported",
         entitlement_id=entitlement.entitlement_id,
         metrics=len(reported),
         rejected=len(failed),
+        unknown=len(unknown),
     )
     return len(reported)
 
@@ -673,25 +739,44 @@ def reconcile_usage(period: str | None = None) -> list[dict]:
 
     stale = GCPMarketplaceUsageCheckpoint.objects.filter(
         report_status=GCPUsageReportStatus.PENDING,
-        updated_at__lt=now - timedelta(hours=6),
+        updated_at__lt=now - timedelta(hours=STUCK_PENDING_HOURS),
     )
     stale_count = stale.count()
     if stale_count:
         # Pending means we called Google and never learned the outcome. Retrying
         # risks double billing and skipping risks losing revenue, so these are
-        # surfaced for a human rather than resolved automatically.
+        # surfaced for a human rather than resolved automatically. Each row
+        # freezes its (entitlement, metric) until then, so this is unbilled
+        # revenue accruing, not a backlog that drains on its own.
+        rows = list(stale.select_related("entitlement")[:20])
+        frozen = [
+            {
+                "entitlement_id": row.entitlement.entitlement_id,
+                "metric": row.metric,
+                "window_start": _rfc3339(row.window_start),
+                "stalled_hours": int((now - row.updated_at).total_seconds() // 3600),
+                "error": row.error_detail[:200],
+            }
+            for row in rows
+        ]
         logger.error(
             "gcp_marketplace_usage_checkpoints_stuck_pending",
             count=stale_count,
-            checkpoints=[
-                {
-                    "entitlement_id": row.entitlement.entitlement_id,
-                    "metric": row.metric,
-                    "window_start": _rfc3339(row.window_start),
-                    "error": row.error_detail[:200],
+            checkpoints=frozen,
+        )
+        capture_message(
+            "gcp_marketplace_usage_checkpoints_stuck_pending",
+            level="error",
+            tags={"alarm": UNRESOLVED_ALARM},
+            context={
+                "marketplace": {
+                    "count": stale_count,
+                    "oldest_hours": max(
+                        (f["stalled_hours"] for f in frozen), default=0
+                    ),
+                    "frozen": frozen,
                 }
-                for row in stale.select_related("entitlement")[:20]
-            ],
+            },
         )
 
     if failures:

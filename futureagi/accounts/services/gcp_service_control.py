@@ -12,6 +12,7 @@ what prevents a window being reported twice.
 import json
 import socket
 import threading
+from dataclasses import dataclass, field
 
 import structlog
 from django.conf import settings
@@ -29,9 +30,24 @@ REQUEST_TIMEOUT_SECONDS = 30
 # is exactly the double-charge the checkpoint table exists to prevent.
 READ_RETRIES = 3
 
+# 4xx codes that do not prove the request was refused.
+UNKNOWN_OUTCOME_STATUSES = frozenset({408, 429})
+
 
 class GCPServiceControlNotConfigured(RuntimeError):
     """Raised when the marketplace service name is absent, as on OSS and EE."""
+
+
+@dataclass
+class ReportOutcome:
+    """Ids Google named in reportErrors, and any error naming no operation."""
+
+    rejected: set[str] = field(default_factory=set)
+    unattributed: list[dict] = field(default_factory=list)
+
+    @property
+    def outcome_known(self) -> bool:
+        return not self.unattributed
 
 
 class GCPServiceControlService:
@@ -117,6 +133,11 @@ class GCPServiceControlService:
         from httplib2 import ServerNotFoundError
 
         if isinstance(exc, HttpError):
+            # 408 and 429 sit in the 4xx range but describe a server-side
+            # condition, not a rejected request, so the operation may still
+            # have been recorded. Unknown, like a 5xx.
+            if exc.status_code in UNKNOWN_OUTCOME_STATUSES:
+                return False
             return 400 <= exc.status_code < 500
         return isinstance(
             exc, (ServerNotFoundError, ConnectionRefusedError, socket.gaierror)
@@ -189,16 +210,17 @@ class GCPServiceControlService:
 
     def report(
         self, operations: list[dict], user_labels: dict[str, str] | None = None
-    ) -> set[str]:
-        """Report checked operations. Returns the ids Google rejected.
+    ) -> ReportOutcome:
+        """Report checked operations. Returns what Google rejected.
 
         An HTTP 200 does not mean the usage was accepted: per-operation failures
         come back in reportErrors. Treating a 200 as success would mark usage
         reported that Google rejected, and it would never be billed.
 
         Errors are per operation, so one bad metric fails only its own operation
-        and the rest still bill. Returning ids rather than a bare list is what
-        lets the caller act on that.
+        and the rest still bill. An error naming no operation leaves the ones it
+        did not name neither accepted nor rejected, so they come back as unknown
+        rather than rejected: a resend of one Google accepted bills it twice.
         """
         # Forwarded to the customer's Cloud Billing cost-management tools for
         # attribution, and accepted by report but not by check. Omitted entirely
@@ -215,7 +237,7 @@ class GCPServiceControlService:
 
         errors = response.get("reportErrors") or []
         if not errors:
-            return set()
+            return ReportOutcome()
 
         logger.error(
             "gcp_marketplace_report_errors",
@@ -223,18 +245,18 @@ class GCPServiceControlService:
             errors=errors,
         )
 
-        named = [error for error in errors if error.get("operationId")]
-        if len(named) < len(errors):
-            # An error naming no operation could belong to any of them, so fail
-            # the batch: treating them as accepted drops usage Google rejected.
+        outcome = ReportOutcome(
+            rejected={e["operationId"] for e in errors if e.get("operationId")},
+            unattributed=[e for e in errors if not e.get("operationId")],
+        )
+        if outcome.unattributed:
             logger.error(
                 "gcp_marketplace_report_errors_unattributed",
                 consumer_id=operations[0].get("consumerId") if operations else None,
                 operations=len(operations),
+                unattributed=len(outcome.unattributed),
             )
-            return {op["operationId"] for op in operations}
-
-        return {error["operationId"] for error in named}
+        return outcome
 
 
 gcp_service_control = GCPServiceControlService()

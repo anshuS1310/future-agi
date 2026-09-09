@@ -5,12 +5,14 @@ from django.db.models import Q
 from django.http import HttpResponseNotAllowed, HttpResponseRedirect, JsonResponse
 from django.template.response import TemplateResponse
 from django.urls import path
+from django.utils import timezone
 from django.utils.html import format_html, format_html_join
 
 from accounts.models.auth_token import AuthToken
 from accounts.models.gcp_marketplace import (
     GCPMarketplaceEntitlement,
     GCPMarketplaceUsageCheckpoint,
+    GCPUsageReportStatus,
 )
 from accounts.models.organization_membership import OrganizationMembership
 from accounts.models.workspace import Workspace, WorkspaceMembership
@@ -701,3 +703,32 @@ class GCPMarketplaceUsageCheckpointAdmin(admin.ModelAdmin):
         if field.name not in ("report_status", "error_detail")
     ]
     ordering = ["-updated_at"]
+    actions = ["settle_as_billed", "settle_as_not_billed"]
+
+    @admin.action(description="Settle as billed (Google recorded it)")
+    def settle_as_billed(self, request, queryset):
+        self._settle(request, queryset, GCPUsageReportStatus.REPORTED)
+
+    @admin.action(description="Settle as not billed (resend next hourly run)")
+    def settle_as_not_billed(self, request, queryset):
+        self._settle(request, queryset, GCPUsageReportStatus.FAILED)
+
+    def _settle(self, request, queryset, status):
+        # PENDING only: releasing a REPORTED row resends a charge Google took.
+        pending = queryset.filter(report_status=GCPUsageReportStatus.PENDING)
+        skipped = queryset.count() - pending.count()
+        billed = status == GCPUsageReportStatus.REPORTED
+        reported_at = timezone.now() if billed else None
+        settled = pending.update(
+            report_status=status,
+            reported_at=reported_at,
+            error_detail=f"settled in admin by {request.user}",
+            updated_at=timezone.now(),
+        )
+        self.message_user(request, f"Settled {settled} as {status}.", messages.SUCCESS)
+        if skipped:
+            self.message_user(
+                request,
+                f"Skipped {skipped} not pending; only an unknown outcome settles here.",
+                messages.WARNING,
+            )

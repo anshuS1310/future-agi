@@ -76,6 +76,9 @@ _ADJUSTMENT_STATUS_PATH = "/run/futureagi/adjustment-status.jsonl"
 _DIRECT_IMAGE_WITH_ADJUSTMENTS = "direct-image-adjustments-v1"
 _SIMULATOR_SECRETS_PATH = "/run/futureagi/simulator-secrets.json"
 _SIMULATOR_VERTEX_CREDENTIALS_PATH = "/run/futureagi/simulator-vertex-sa.json"
+_PROVIDER_POLL_TIMEOUT_SECONDS = 15
+_PROGRESS_FILE_TIMEOUT_SECONDS = 5
+_PROVIDER_UNREACHABLE_GRACE_SECONDS = 180
 
 
 def _platform_simulator_material() -> tuple[dict[str, str], bytes | None]:
@@ -516,7 +519,7 @@ class HostedSourceAcquirer:
 
     def acquire(self, job: HostedHarnessJob) -> tuple[bytes, str]:
         source = job.payload["source"]
-        if source["kind"] == "remote":
+        if source["kind"] in {"remote", "provider"}:
             return _empty_source_archive(), ""
         if source["kind"] == "archive":
             return _load_source_archive(job), ""
@@ -1544,7 +1547,7 @@ class DaytonaHostedGateway:
                     status_code=502,
                     retryable=True,
                 )
-            return sandbox.fs.download_file("/tmp/authoring.tar.gz")
+            return sandbox.fs.download_file("/tmp/authoring.tar.gz", 300)
         finally:
             if sandbox is not None:
                 try:
@@ -1917,12 +1920,27 @@ class DaytonaHostedGateway:
             return attempt
 
     def inspect(self, attempt: HostedHarnessAttempt) -> dict[str, Any]:
-        sandbox = self.client.get(str(attempt.provider_ref))
-        self._sync_authoring_progress(attempt, sandbox)
-        command_id = (
-            sandbox.fs.download_file(_ENTRYPOINT_COMMAND_ID_FILE).decode().strip()
+        sandbox = self.client.get(
+            str(attempt.provider_ref),
+            request_timeout=_PROVIDER_POLL_TIMEOUT_SECONDS,
         )
-        command = sandbox.process.get_session_command(_ENTRYPOINT_SESSION, command_id)
+        command_id = (
+            sandbox.fs.download_file(
+                _ENTRYPOINT_COMMAND_ID_FILE, _PROVIDER_POLL_TIMEOUT_SECONDS
+            )
+            .decode()
+            .strip()
+        )
+        command = sandbox.process.get_session_command(
+            _ENTRYPOINT_SESSION,
+            command_id,
+            request_timeout=_PROVIDER_POLL_TIMEOUT_SECONDS,
+        )
+        # Probe the primary command before best-effort progress enrichment. If the provider
+        # toolbox is unavailable, fail this poll promptly instead of multiplying the outage by
+        # every optional artifact read below. Reconciliation applies a short grace period and
+        # then replaces the unhealthy sandbox using the normal infrastructure retry budget.
+        self._sync_authoring_progress(attempt, sandbox)
         observation: dict[str, Any] = {
             "exit_code": command.exit_code,
             "status": getattr(command, "status", None),
@@ -1933,7 +1951,9 @@ class DaytonaHostedGateway:
             # torn down, so crashes are diagnosable without keeping sandboxes.
             try:
                 logs = sandbox.process.get_session_command_logs(
-                    _ENTRYPOINT_SESSION, command_id
+                    _ENTRYPOINT_SESSION,
+                    command_id,
+                    request_timeout=_PROVIDER_POLL_TIMEOUT_SECONDS,
                 )
                 text = getattr(logs, "output", None) or "\n".join(
                     part
@@ -2027,7 +2047,10 @@ class DaytonaHostedGateway:
                 status_code=409,
             )
         try:
-            sandbox = self.client.get(str(attempt.provider_ref))
+            sandbox = self.client.get(
+                str(attempt.provider_ref),
+                request_timeout=_PROVIDER_POLL_TIMEOUT_SECONDS,
+            )
         except DaytonaNotFoundError as exc:
             raise HostedHarnessError(
                 "adjustment_sandbox_missing",
@@ -2109,7 +2132,11 @@ class DaytonaHostedGateway:
 
         def _json(path: str):
             try:
-                return json.loads(sandbox.fs.download_file(path).decode("utf-8"))
+                return json.loads(
+                    sandbox.fs.download_file(
+                        path, _PROGRESS_FILE_TIMEOUT_SECONDS
+                    ).decode("utf-8")
+                )
             except Exception:  # noqa: BLE001 - an absent/incomplete stage file is expected
                 return None
 
@@ -2156,7 +2183,7 @@ class DaytonaHostedGateway:
                 )
                 if packed.exit_code:
                     raise RuntimeError(str(packed.result or "authoring pack failed"))
-                body = sandbox.fs.download_file("/tmp/authoring-rerun.tar.gz")
+                body = sandbox.fs.download_file("/tmp/authoring-rerun.tar.gz", 300)
                 store_authoring_archive(job, body, advance_lifecycle=False)
                 job.refresh_from_db()
             except Exception:  # noqa: BLE001 - retry on the next poll; do not abort calls
@@ -2210,7 +2237,9 @@ class DaytonaHostedGateway:
     @staticmethod
     def _sync_adjustment_progress(job: HostedHarnessJob, sandbox) -> None:
         try:
-            raw = sandbox.fs.download_file(_ADJUSTMENT_STATUS_PATH).decode("utf-8")
+            raw = sandbox.fs.download_file(
+                _ADJUSTMENT_STATUS_PATH, _PROGRESS_FILE_TIMEOUT_SECONDS
+            ).decode("utf-8")
         except Exception:  # noqa: BLE001 - status file does not exist before first boundary
             return
         statuses: dict[str, dict[str, Any]] = {}
@@ -2309,7 +2338,7 @@ class DaytonaHostedGateway:
     def reconcile_completed(
         self, attempt: HostedHarnessAttempt
     ) -> HostedHarnessJob | None:
-        from daytona import DaytonaNotFoundError
+        from daytona import DaytonaConflictError, DaytonaError, DaytonaNotFoundError
 
         # ``launch`` can fail before Daytona returns a sandbox id.  That path has already
         # recorded cleanup and projected the job into RETRY_WAIT (or terminal FAILED when the
@@ -2359,6 +2388,70 @@ class DaytonaHostedGateway:
                 retry_pending=retry_pending,
                 details={"provider": "daytona", "already_absent": True},
             )
+        except DaytonaError as exc:
+            # Daytona can keep reporting a sandbox as STARTED while its toolbox/daemon is no
+            # longer reachable. The SDK's default file timeout is much longer than the Temporal
+            # poll activity timeout, which previously left the workflow retrying the poll for
+            # hours with no terminal diagnosis. Tolerate a short control-plane wobble, then
+            # retire the sandbox and start a genuinely fresh infrastructure attempt.
+            grace_seconds = int(
+                getattr(
+                    settings,
+                    "ALK_HOSTED_PROVIDER_UNREACHABLE_GRACE_SECONDS",
+                    _PROVIDER_UNREACHABLE_GRACE_SECONDS,
+                )
+            )
+            last_seen = attempt.heartbeat_at or attempt.created_at
+            if (
+                last_seen
+                and (timezone.now() - last_seen).total_seconds() < grace_seconds
+            ):
+                logger.warning(
+                    "hosted sandbox temporarily unreachable attempt=%s provider_ref=%s",
+                    attempt.id,
+                    attempt.provider_ref,
+                )
+                return None
+            attempt.terminal_stage = "failed"
+            attempt.terminal_failure = {
+                "domain": "infrastructure",
+                "stage": "running",
+                "code": "sandbox_unreachable",
+                "message": (
+                    "provider sandbox toolbox remained unreachable after the recovery "
+                    "grace period"
+                ),
+                "details": {
+                    "provider": "daytona",
+                    "exception_type": type(exc).__name__,
+                    "grace_seconds": grace_seconds,
+                },
+            }
+            attempt.state = HostedHarnessAttempt.State.FAILED
+            attempt.save(
+                update_fields=[
+                    "terminal_stage",
+                    "terminal_failure",
+                    "state",
+                    "updated_at",
+                ]
+            )
+            try:
+                return self._delete_and_record(
+                    attempt,
+                    retry_pending=self._should_retry(attempt, "infrastructure"),
+                )
+            except DaytonaConflictError:
+                # The first delete request can be accepted even when its wait call ends in a
+                # lifecycle 409 ("state change in progress"). Cleanup is not verified yet, so
+                # let the next workflow poll observe absence instead of burning all activity
+                # retries on an already-running provider transition.
+                logger.info(
+                    "hosted sandbox deletion still in progress attempt=%s provider_ref=%s",
+                    attempt.id,
+                    attempt.provider_ref,
+                )
+                return None
         exit_code = observation["exit_code"]
         if exit_code is None:
             attempt.heartbeat_at = timezone.now()
@@ -2500,13 +2593,19 @@ class DaytonaHostedGateway:
         from daytona import DaytonaNotFoundError
 
         try:
-            sandbox = self.client.get(str(attempt.provider_ref))
+            sandbox = self.client.get(
+                str(attempt.provider_ref),
+                request_timeout=_PROVIDER_POLL_TIMEOUT_SECONDS,
+            )
         except DaytonaNotFoundError:
             absent = True
         else:
             self.client.delete(sandbox, timeout=120, wait=True)
             try:
-                self.client.get(str(attempt.provider_ref))
+                self.client.get(
+                    str(attempt.provider_ref),
+                    request_timeout=_PROVIDER_POLL_TIMEOUT_SECONDS,
+                )
             except DaytonaNotFoundError:
                 absent = True
             else:

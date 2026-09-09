@@ -93,6 +93,13 @@ export const canStartEndToEndRun = ({
   uploadingSecretFile,
 }) => hasSource && !submitting && !checking && !uploadingSecretFile;
 
+const providerCredentialName = (connector) =>
+  connector === "vapi"
+    ? "VAPI_API_KEY"
+    : ["retell", "retell_chat"].includes(connector)
+      ? "RETELL_API_KEY"
+      : null;
+
 function Section({ title, description, children }) {
   return (
     <Paper variant="outlined" sx={{ p: 2 }}>
@@ -212,6 +219,10 @@ export default function HarnessCreate() {
   const [secretFileUploads, setSecretFileUploads] = useState({});
   const [uploadingSecretFile, setUploadingSecretFile] = useState(false);
   const [configurationValues, setConfigurationValues] = useState({});
+  // Provider connection credentials have first-class fields. Keep them out of
+  // the catch-all environment editor so that box is genuinely only for extra
+  // agent-specific values discovered from source code.
+  const [providerCredentialValues, setProviderCredentialValues] = useState({});
   const [environmentValues, setEnvironmentValues] = useState({});
   const [environmentText, setEnvironmentText] = useState("");
   const [environmentError, setEnvironmentError] = useState("");
@@ -227,12 +238,15 @@ export default function HarnessCreate() {
   };
 
   const sourcePayload = () => {
-    if (sourceMode === "upload")
+    if (sourceMode === "upload") {
+      if (!uploadedSource?.source_id) return undefined;
       return {
         kind: "archive",
-        archive_artifact_id: uploadedSource?.source_id,
+        archive_artifact_id: uploadedSource.source_id,
       };
+    }
     const parsed = parseGitHubInput(githubRepository);
+    if (!parsed && !githubRepository.trim()) return undefined;
     return {
       kind: "github",
       repository: parsed?.repository || githubRepository.trim(),
@@ -242,6 +256,16 @@ export default function HarnessCreate() {
         githubVisibility === "private"
           ? githubInstallationId.trim() || undefined
           : undefined,
+    };
+  };
+
+  const targetCredentialValues = () => {
+    const name = providerCredentialName(connector);
+    return {
+      ...environmentValues,
+      ...(name && providerCredentialValues[name]
+        ? { [name]: providerCredentialValues[name] }
+        : {}),
     };
   };
 
@@ -286,7 +310,7 @@ export default function HarnessCreate() {
 
   const pendingEnvironmentRefs = () =>
     Object.fromEntries(
-      Object.keys(environmentValues).map((alias) => [
+      Object.keys(targetCredentialValues()).map((alias) => [
         alias,
         {
           manager: "platform-vault",
@@ -299,7 +323,7 @@ export default function HarnessCreate() {
 
   const hostedPayload = (secretRefs = {}) => ({
     schema_version: "futureagi.harness-job.v1",
-    source: sourcePayload(),
+    ...(sourcePayload() ? { source: sourcePayload() } : {}),
     agent: {
       connector,
       ...(["vapi", "retell", "retell_chat"].includes(connector)
@@ -351,7 +375,7 @@ export default function HarnessCreate() {
       allow_privileged: false,
       allow_host_runtime_control: false,
       allowed_egress_domains: mergeEgressDomains(
-        deriveEgressDomains(configurationValues, environmentValues),
+        deriveEgressDomains(configurationValues, targetCredentialValues()),
         parseEgressDomains(additionalEgressDomains),
       ),
     },
@@ -371,10 +395,12 @@ export default function HarnessCreate() {
       name:
         uploadedSource?.name ||
         githubRepository.trim().split("/").pop() ||
+        providerTargetId.trim() ||
         "agent",
       authoring_key:
         uploadedSource?.name ||
         githubRepository.trim().split("/").pop() ||
+        providerTargetId.trim() ||
         "agent",
     },
   });
@@ -383,8 +409,8 @@ export default function HarnessCreate() {
   // the create payload never carries raw values, only the stored refs.
   const preflightPayload = () => ({
     ...hostedPayload(pendingEnvironmentRefs()),
-    ...(Object.keys(environmentValues).length
-      ? { credential_values: environmentValues }
+    ...(Object.keys(targetCredentialValues()).length
+      ? { credential_values: targetCredentialValues() }
       : {}),
   });
 
@@ -417,8 +443,9 @@ export default function HarnessCreate() {
         setSubmitting(false);
         return;
       }
-      const stored = Object.keys(environmentValues).length
-        ? await storeHarnessSecretValues(environmentValues)
+      const valuesToStore = targetCredentialValues();
+      const stored = Object.keys(valuesToStore).length
+        ? await storeHarnessSecretValues(valuesToStore)
         : { secret_refs: {} };
       const value = await createHarnessJob(
         hostedPayload(stored.secret_refs || {}),
@@ -440,6 +467,19 @@ export default function HarnessCreate() {
         configurationValues,
         values,
       );
+      const providerValues = {};
+      ["VAPI_API_KEY", "RETELL_API_KEY"].forEach((name) => {
+        if (merged.environmentValues[name]) {
+          providerValues[name] = merged.environmentValues[name];
+          delete merged.environmentValues[name];
+        }
+      });
+      if (Object.keys(providerValues).length) {
+        setProviderCredentialValues((current) => ({
+          ...current,
+          ...providerValues,
+        }));
+      }
       setEnvironmentValues(merged.environmentValues);
       setConfigurationValues(merged.configurationValues);
       setEnvironmentError("");
@@ -504,7 +544,8 @@ export default function HarnessCreate() {
     if (secretFileRefs[name]) return true;
     return Boolean(
       String(
-        credentialValue(environmentValues, configurationValues, name) || "",
+        credentialValue(targetCredentialValues(), configurationValues, name) ||
+          "",
       ).trim(),
     );
   };
@@ -532,15 +573,10 @@ export default function HarnessCreate() {
   const detectedRequirements = requirements.filter(
     (item) => item.status !== "missing",
   );
-  const providerApiKeyName =
-    connector === "vapi"
-      ? "VAPI_API_KEY"
-      : ["retell", "retell_chat"].includes(connector)
-        ? "RETELL_API_KEY"
-        : null;
+  const providerApiKeyName = providerCredentialName(connector);
   const providerApiKeyConfigured =
     !providerApiKeyName ||
-    Boolean(String(environmentValues[providerApiKeyName] || "").trim());
+    Boolean(String(providerCredentialValues[providerApiKeyName] || "").trim());
   const providerTargetConfigured =
     !["connect_only", "provider_import"].includes(providerMode) ||
     Boolean(providerTargetId.trim());
@@ -641,11 +677,23 @@ export default function HarnessCreate() {
             // helpers keeps it out of both maps at once, which is what left a
             // stale entry showing after a paste.
             value={credentialValue(
-              environmentValues,
+              targetCredentialValues(),
               configurationValues,
               item.environment_name,
             )}
             onChange={(event) => {
+              if (
+                ["VAPI_API_KEY", "RETELL_API_KEY"].includes(
+                  item.environment_name,
+                )
+              ) {
+                setProviderCredentialValues((current) => ({
+                  ...current,
+                  [item.environment_name]: event.target.value,
+                }));
+                setPreflightDirty(Boolean(preflight));
+                return;
+              }
               const next = updateCredential(
                 environmentValues,
                 configurationValues,
@@ -690,11 +738,16 @@ export default function HarnessCreate() {
     );
   };
 
-  const hasSource =
+  const hasUploadedOrRepositorySource =
     sourceMode === "upload"
       ? Boolean(uploadedSource?.source_id)
       : Boolean(parseGitHubInput(githubRepository)) &&
         (githubVisibility === "public" || Boolean(githubInstallationId.trim()));
+  const hasConnectedProviderSource =
+    ["vapi", "retell", "retell_chat"].includes(connector) &&
+    ["connect_only", "provider_import"].includes(providerMode) &&
+    Boolean(providerTargetId.trim());
+  const hasSource = hasUploadedOrRepositorySource || hasConnectedProviderSource;
 
   return (
     <>
@@ -753,7 +806,7 @@ export default function HarnessCreate() {
             <Stack spacing={2}>
               <Section
                 title="Agent source"
-                description="Where ALK should read the agent from."
+                description="Upload or check out source code, or connect a provider agent below. Source code is optional when a provider agent ID is connected."
               >
                 <Stack spacing={2}>
                   <Box
@@ -1146,8 +1199,8 @@ export default function HarnessCreate() {
               </Paper>
 
               <Section
-                title="Environment values"
-                description="Values stay in this browser session, are sent only for preflight and run execution, and are never written to jobs, logs, or artifacts."
+                title="Additional environment values"
+                description="Add only agent-specific values that are not already collected in the connection fields above. Values stay in this browser session, are sent only for preflight and run execution, and are never written to jobs, logs, or artifacts."
               >
                 <Stack spacing={1.5}>
                   <Stack
@@ -1160,8 +1213,8 @@ export default function HarnessCreate() {
                       size="small"
                       multiline
                       maxRows={4}
-                      label="Paste .env contents"
-                      placeholder="OPENAI_API_KEY=..."
+                      label="Paste additional .env values"
+                      placeholder="CUSTOM_API_KEY=..."
                       value={environmentText}
                       onChange={(event) =>
                         setEnvironmentText(event.target.value)
@@ -1338,6 +1391,50 @@ export default function HarnessCreate() {
                       ) ? (
                         <Stack spacing={1.5}>
                           <TextField
+                            fullWidth
+                            size="small"
+                            label={providerApiKeyName}
+                            type={
+                              revealedSecrets.has(providerApiKeyName)
+                                ? "text"
+                                : "password"
+                            }
+                            value={
+                              providerCredentialValues[providerApiKeyName] || ""
+                            }
+                            onChange={(event) => {
+                              setProviderCredentialValues((current) => ({
+                                ...current,
+                                [providerApiKeyName]: event.target.value,
+                              }));
+                              setPreflightDirty(Boolean(preflight));
+                            }}
+                            helperText="Used to inspect and connect to this provider agent. Stored as a run-scoped secret; never written to the job or artifacts."
+                            InputProps={{
+                              endAdornment: (
+                                <InputAdornment position="end">
+                                  <IconButton
+                                    size="small"
+                                    edge="end"
+                                    onClick={() =>
+                                      toggleSecret(providerApiKeyName)
+                                    }
+                                    aria-label={`${revealedSecrets.has(providerApiKeyName) ? "Hide" : "Show"} ${providerApiKeyName}`}
+                                  >
+                                    <Iconify
+                                      icon={
+                                        revealedSecrets.has(providerApiKeyName)
+                                          ? "solar:eye-closed-linear"
+                                          : "solar:eye-linear"
+                                      }
+                                      width={16}
+                                    />
+                                  </IconButton>
+                                </InputAdornment>
+                              ),
+                            }}
+                          />
+                          <TextField
                             size="small"
                             label={
                               connector === "vapi"
@@ -1353,8 +1450,8 @@ export default function HarnessCreate() {
                             }}
                             helperText={
                               providerMode === "provider_import"
-                                ? `ALK clones this target, rewires custom HTTP tools to the uploaded repository environment, and cleans up the clone. Supply the matching ${connector === "vapi" ? "VAPI_API_KEY" : "RETELL_API_KEY"} below.`
-                                : `The matching ${connector === "vapi" ? "VAPI_API_KEY" : "RETELL_API_KEY"} must be supplied below.`
+                                ? "ALK clones this target, rewires imported HTTP tools to the isolated environment, and cleans up the clone. Upload source code only when the provider definition lacks required environment or tool information."
+                                : "ALK connects to this existing provider agent without cloning it. Source-code upload is optional."
                             }
                           />
                           {connector === "retell_chat" && (
@@ -1383,10 +1480,8 @@ export default function HarnessCreate() {
                       )}
                       {!providerApiKeyConfigured && (
                         <Alert severity="warning" variant="outlined">
-                          Add {providerApiKeyName} in Environment values and
-                          click Use values before starting. ALK stores it as a
-                          run-scoped secret and never writes it into the job or
-                          bundle.
+                          Add {providerApiKeyName} in the connection field above
+                          before starting.
                         </Alert>
                       )}
                     </>

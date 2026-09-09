@@ -11,7 +11,10 @@ from rest_framework.response import Response
 from rest_framework.test import APIClient
 
 from simulate.models import RunTest
-from simulate.serializers.harness_job import HarnessJobCreateSerializer
+from simulate.serializers.harness_job import (
+    HarnessJobCreateSerializer,
+    HarnessPreflightSerializer,
+)
 from simulate.services.harness_provider import (
     DaytonaHarnessProvider,
     SandboxHarnessProvider,
@@ -361,6 +364,75 @@ def test_explicit_livekit_submission_still_requires_target_credentials():
 
     assert not serializer.is_valid()
     assert "LIVEKIT_URL" in str(serializer.errors)
+
+
+def test_connected_provider_agent_is_a_valid_source_without_repository_upload():
+    payload = _v1_payload()
+    payload.pop("source")
+    payload["agent"] = {
+        "connector": "retell",
+        "mode": "provider_import",
+        "config": {"agent_id": "agent-123"},
+        "secret_refs": {
+            "RETELL_API_KEY": {
+                "manager": "platform-vault",
+                "key": "retell-run-secret",
+                "version": "1",
+                "purpose": "target_provider",
+            }
+        },
+    }
+
+    serializer = HarnessJobCreateSerializer(data=payload)
+
+    assert serializer.is_valid(), serializer.errors
+    assert serializer.validated_data["source"] == {
+        "kind": "provider",
+        "visibility": "public",
+    }
+
+
+def test_provider_connection_value_satisfies_preflight_without_extra_env_source():
+    payload = _v1_payload()
+    payload.pop("source")
+    payload["agent"] = {
+        "connector": "retell_chat",
+        "mode": "connect_only",
+        "config": {"agent_id": "agent-123"},
+        "secret_refs": {
+            "RETELL_API_KEY": {
+                "manager": "platform-vault",
+                "key": "pending:retell_api_key",
+                "version": "pending",
+                "purpose": "target_provider",
+            }
+        },
+    }
+    payload["credential_values"] = {"RETELL_API_KEY": "test-provider-value"}
+
+    serializer = HarnessPreflightSerializer(data=payload)
+
+    assert serializer.is_valid(), serializer.errors
+    assert serializer.validated_data["credential_values"] == {
+        "RETELL_API_KEY": "test-provider-value"
+    }
+    assert serializer.validated_data["source"]["kind"] == "provider"
+
+
+def test_repository_source_remains_required_for_environment_backed_provider():
+    payload = _v1_payload()
+    payload.pop("source")
+    payload["agent"] = {
+        "connector": "retell",
+        "mode": "environment_backed",
+        "config": {"lifecycle_manifest": "alk.yaml"},
+        "secret_refs": {},
+    }
+
+    serializer = HarnessJobCreateSerializer(data=payload)
+
+    assert not serializer.is_valid()
+    assert "existing provider agent ID" in str(serializer.errors)
 
 
 @pytest.mark.django_db

@@ -1443,14 +1443,12 @@ export default function HarnessCreate() {
                       setCallTimeoutSeconds(event.target.value)
                     }
                     inputProps={{ min: 30, max: 3600 }}
-                    placeholder="default"
+                    placeholder="300"
                     sx={{ width: 180, flexShrink: 0 }}
                   />
                   <Typography variant="caption" color="text.secondary">
-                    How long a single call may run before it is stopped. Leave
-                    blank to keep the default for this agent. A call cut off at
-                    the limit ends without a natural closing, so raise it for an
-                    agent that works through long forms.
+                    Blank uses the default, 300 seconds. A call stopped at the
+                    limit has no closing turn.
                   </Typography>
                 </Stack>
               </Section>

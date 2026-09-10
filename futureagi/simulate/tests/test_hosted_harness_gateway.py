@@ -1240,7 +1240,8 @@ def test_gateway_polls_diagnostics_to_s3_and_finalizes_before_cleanup(
     client = _Daytona()
     process = client.sandbox.process
     process.entrypoint_output = (
-        "production prod true 13 target-secret custom-secret-value\nwaiting"
+        "\x01\x02\x1b[31mproduction prod true 13 target-secret "
+        "custom-secret-value\x1b[0m\nwaiting"
     )
     process.process_output = "worker simulator-secret\nready"
     uploaded = []

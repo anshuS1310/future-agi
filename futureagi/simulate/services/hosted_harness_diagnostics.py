@@ -32,6 +32,12 @@ _PROCESS_LOG_COMMAND = (
 )
 _BEARER_TOKEN = re.compile(r"(?i)(bearer\s+)[A-Za-z0-9._~+/=-]+")
 _QUERY_TOKEN = re.compile(r"(?i)([?&](?:access_)?token=)[^&\s]+")
+_ANSI_ESCAPE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+_CONTROL_CHARACTER_TRANSLATION = {
+    code: None
+    for code in range(128)
+    if (code < 32 and code not in {9, 10, 13}) or code == 127
+}
 _SENSITIVE_ASSIGNMENT = re.compile(
     r"""(?ix)
     (
@@ -118,8 +124,13 @@ def _secret_fragments(values: Iterable[str]) -> list[str]:
     return sorted(fragments, key=len, reverse=True)
 
 
+def _normalize_log_text(text: str) -> str:
+    without_ansi = _ANSI_ESCAPE.sub("", str(text or ""))
+    return without_ansi.translate(_CONTROL_CHARACTER_TRANSLATION)
+
+
 def _redact(text: str, secret_fragments: Iterable[str]) -> str:
-    redacted = str(text or "")
+    redacted = _normalize_log_text(text)
     for secret in secret_fragments:
         redacted = redacted.replace(secret, "[REDACTED]")
     redacted = _PRIVATE_KEY.sub("[REDACTED PRIVATE KEY]", redacted)

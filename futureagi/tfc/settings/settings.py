@@ -84,6 +84,21 @@ def _bounded_env_int(
     return int(spec.parse(name, os.getenv(name)))
 
 
+def _admission_env_int(name: str, default: int) -> int:
+    """A hosted-runner admission ceiling from the environment. A missing,
+    empty, or non-integer value falls back to the default so a bad override can
+    never crash settings import (``_positive_setting`` in the service layer
+    documents the same lenient fallback and cannot help once import has already
+    failed). The service layer re-checks the bound and treats 0 as 'disabled'."""
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return int(raw.strip())
+    except ValueError:
+        return default
+
+
 # Numeric runtime knobs are declared once in runtime_setting_specs.py. Parse
 # and cross-validate them before database/cache configuration consumes them.
 _runtime_numeric_settings = _load_numeric_settings(
@@ -701,15 +716,26 @@ HOSTED_RUNNER_LEASED_ROOM_REUSE = os.getenv(
     "HOSTED_RUNNER_LEASED_ROOM_REUSE", "false"
 ).lower() in ("true", "1", "yes")
 
-# Admission ceilings for the leased-room phone path (the target dials our one
-# scarce leased number, so cases run strictly serially and hold that number
-# for the whole run). Refuse a run before any number is leased when it would
-# reserve too many cases or too much wall-clock. 0 disables that limit.
-HOSTED_RUNNER_LEASED_ROOM_MAX_CASES = int(
-    os.getenv("HOSTED_RUNNER_LEASED_ROOM_MAX_CASES", "25")
+# Admission ceilings for hosted voice runs. Every run reserves a runner child
+# slot for its full wall-clock; a telephony or single-concurrency web run is
+# serial, so an arbitrary dataset otherwise reserves that slot without bound.
+# Refuse a run before the workflow is dispatched when it would reserve too many
+# cases or too much wall-clock. 0 disables that specific limit. Parsed leniently
+# so a bad override cannot crash settings import.
+#
+# Global cap — every hosted voice job.
+HOSTED_RUNNER_MAX_CASES = _admission_env_int("HOSTED_RUNNER_MAX_CASES", 500)
+HOSTED_RUNNER_MAX_WALLCLOCK_SECONDS = _admission_env_int(
+    "HOSTED_RUNNER_MAX_WALLCLOCK_SECONDS", 6 * 60 * 60
 )
-HOSTED_RUNNER_LEASED_ROOM_MAX_WALLCLOCK_SECONDS = int(
-    os.getenv("HOSTED_RUNNER_LEASED_ROOM_MAX_WALLCLOCK_SECONDS", str(4 * 60 * 60))
+# Tighter cap for the leased-room phone path (the target dials our one scarce
+# leased number, so cases run strictly serially and hold that number for the
+# whole run).
+HOSTED_RUNNER_LEASED_ROOM_MAX_CASES = _admission_env_int(
+    "HOSTED_RUNNER_LEASED_ROOM_MAX_CASES", 25
+)
+HOSTED_RUNNER_LEASED_ROOM_MAX_WALLCLOCK_SECONDS = _admission_env_int(
+    "HOSTED_RUNNER_LEASED_ROOM_MAX_WALLCLOCK_SECONDS", 4 * 60 * 60
 )
 
 # Structured logging configuration with django-structlog

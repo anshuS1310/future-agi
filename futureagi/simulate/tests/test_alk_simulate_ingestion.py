@@ -2002,12 +2002,16 @@ class TestBuildVoiceRunnerJob:
     def test_leased_room_admission_disabled_with_zero_caps(
         self, organization, workspace, simulator_agent
     ):
-        # Issue 2: both caps at 0 disable admission — a large run builds.
+        # Issue 2 + re-review: admission now has a global layer as well as the
+        # leased one, so fully disabling it means zeroing both. With all four
+        # caps at 0 a large run builds.
         from django.test import override_settings
 
         agent = self._retell_originator_agent(organization, workspace)
         with override_settings(
             HOSTED_RUNNER_LEASED_ROOM_REUSE=True,
+            HOSTED_RUNNER_MAX_CASES=0,
+            HOSTED_RUNNER_MAX_WALLCLOCK_SECONDS=0,
             HOSTED_RUNNER_LEASED_ROOM_MAX_CASES=0,
             HOSTED_RUNNER_LEASED_ROOM_MAX_WALLCLOCK_SECONDS=0,
         ):
@@ -2015,6 +2019,102 @@ class TestBuildVoiceRunnerJob:
                 organization, workspace, simulator_agent, agent, 40
             )
         assert mode == "voice_sip"
+
+    def test_sip_outbound_admission_refuses_excess_wallclock(
+        self, organization, workspace, simulator_agent
+    ):
+        # Re-review: the wall-clock bound must cover every hosted voice job, not
+        # only the leased-DID path. sip_outbound is forced serial, so an
+        # oversized dataset reserves a runner child slot without bound; refuse
+        # it before the workflow is dispatched.
+        from django.test import override_settings
+
+        from simulate.services.hosted_runner import HostedRunnerBuildError
+
+        agent = self._voice_agent(
+            organization,
+            workspace,
+            provider="livekit",
+            phone="+15551230000",
+            inbound=True,
+        )
+        with override_settings(
+            LIVEKIT_OUTBOUND_TRUNK_ID="ST_trunk",
+            PSTN_CALLER_NUMBER="+15550009999",
+            HOSTED_RUNNER_MAX_WALLCLOCK_SECONDS=600,
+        ):
+            with pytest.raises(HostedRunnerBuildError) as excinfo:
+                self._build_multi(
+                    organization, workspace, simulator_agent, agent, 3
+                )
+        message = str(excinfo.value)
+        assert "cap" in message
+        assert "HOSTED_RUNNER_MAX_WALLCLOCK_SECONDS" in message
+
+    def test_sip_outbound_admission_refuses_excess_rows(
+        self, organization, workspace, simulator_agent
+    ):
+        # The global case cap also protects the non-leased telephony path.
+        from django.test import override_settings
+
+        from simulate.services.hosted_runner import HostedRunnerBuildError
+
+        agent = self._voice_agent(
+            organization,
+            workspace,
+            provider="livekit",
+            phone="+15551230000",
+            inbound=True,
+        )
+        with override_settings(
+            LIVEKIT_OUTBOUND_TRUNK_ID="ST_trunk",
+            PSTN_CALLER_NUMBER="+15550009999",
+            HOSTED_RUNNER_MAX_CASES=2,
+        ):
+            with pytest.raises(HostedRunnerBuildError) as excinfo:
+                self._build_multi(
+                    organization, workspace, simulator_agent, agent, 3
+                )
+        assert "capped at 2" in str(excinfo.value)
+
+    def test_web_transport_admission_refuses_excess_wallclock(
+        self, organization, workspace, simulator_agent
+    ):
+        # The global wall-clock bound covers non-telephony webrtc too, not only
+        # the telephony paths — a serial or low-concurrency web run has the same
+        # unbounded child-slot problem. The cap is set below the minimum
+        # per-case budget so the refusal holds regardless of the fixture's call
+        # ceiling or the credentials' default concurrency.
+        from django.test import override_settings
+
+        from simulate.services.hosted_runner import HostedRunnerBuildError
+
+        agent = self._voice_agent(
+            organization,
+            workspace,
+            provider="vapi",
+            phone="",
+            assistant_id="asst_123",
+        )
+        with override_settings(HOSTED_RUNNER_MAX_WALLCLOCK_SECONDS=100):
+            with pytest.raises(HostedRunnerBuildError) as excinfo:
+                self._build_multi(
+                    organization, workspace, simulator_agent, agent, 3
+                )
+        assert "HOSTED_RUNNER_MAX_WALLCLOCK_SECONDS" in str(excinfo.value)
+
+    def test_admission_env_int_is_lenient(self, monkeypatch):
+        # Issue B: a bad HOSTED_RUNNER_*_MAX_* override must fall back to the
+        # default rather than crash settings import with a ValueError.
+        from tfc.settings.settings import _admission_env_int
+
+        for bad in ("not-an-int", "", "  ", "12.5"):
+            monkeypatch.setenv("FI_TEST_ADMISSION_INT", bad)
+            assert _admission_env_int("FI_TEST_ADMISSION_INT", 25) == 25
+        monkeypatch.delenv("FI_TEST_ADMISSION_INT", raising=False)
+        assert _admission_env_int("FI_TEST_ADMISSION_INT", 25) == 25
+        monkeypatch.setenv("FI_TEST_ADMISSION_INT", "50")
+        assert _admission_env_int("FI_TEST_ADMISSION_INT", 25) == 50
 
     def _assert_leased_deadline_identity(self, job, case_count):
         """D15: pin ``cleanup_timeout`` and the derived child deadline from

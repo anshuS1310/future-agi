@@ -82,6 +82,38 @@ def _leased_room_run_seconds(case_count: int, max_seconds: float) -> float:
     )
 
 
+def _effective_voice_concurrency(
+    transport_kind: str, max_concurrency: int, case_count: int
+) -> int:
+    """Cases that actually run in parallel. Telephony leases a single DID and
+    stays strictly serial regardless of the requested ceiling; any other voice
+    run parallelises up to the requested concurrency, bounded by the case count.
+    Mirrors :func:`_voice_params` so the admission estimate and the emitted
+    deadline cannot drift."""
+    if transport_kind in {"sip_inbound", "sip_outbound"}:
+        return 1
+    return max(1, min(int(max_concurrency or 1), case_count))
+
+
+def _hosted_run_seconds(
+    case_count: int,
+    max_seconds: float,
+    *,
+    effective_concurrency: int,
+    leased_room: bool,
+) -> float:
+    """Estimated wall-clock a hosted voice run reserves a runner child slot.
+
+    A leased-room run holds the one scarce DID for the serial leased estimate;
+    any other run reserves the child for ``ceil(N / concurrency)`` case budgets.
+    Mirrors the deadline math in :func:`_voice_params`."""
+    if leased_room:
+        return _leased_room_run_seconds(case_count, max_seconds)
+    per_case_budget = max_seconds + _fixed_overhead_seconds() + _BASE_CLEANUP_SECONDS
+    batches = -(-case_count // max(1, effective_concurrency))  # ceil division
+    return batches * per_case_budget
+
+
 class ConversationDirection(StrEnum):
     """Who opens a hosted voice conversation. The value is the wire string the
     SDK engine reads from the job (``livekit.py`` validates against exactly
@@ -547,34 +579,68 @@ def _positive_setting(name: str, default: int) -> int:
     return value if value >= 0 else default
 
 
-def _enforce_leased_room_admission(case_count: int, *, max_call_minutes: int) -> None:
-    """Refuse a leased-room phone run that would hold the one scarce leased
-    number for too many cases or too much wall-clock, before any number is
-    leased. Either limit set to 0 disables that check.
+def _enforce_hosted_voice_admission(
+    case_count: int,
+    *,
+    max_call_minutes: int,
+    effective_concurrency: int,
+    leased_room: bool,
+) -> None:
+    """Refuse a hosted voice run that would reserve a runner child slot — and,
+    for a leased-DID run, the one scarce leased number — for too many cases or
+    too much wall-clock, before the workflow is dispatched. A global cap guards
+    every hosted voice job (telephony and single-concurrency web runs are serial
+    and otherwise unbounded); a leased-DID run additionally honours a tighter
+    cap. Any limit set to 0 disables that specific check.
     """
-    max_cases = _positive_setting("HOSTED_RUNNER_LEASED_ROOM_MAX_CASES", 25)
+    estimated = _hosted_run_seconds(
+        case_count,
+        _max_seconds_for(max_call_minutes),
+        effective_concurrency=effective_concurrency,
+        leased_room=leased_room,
+    )
+
+    max_cases = _positive_setting("HOSTED_RUNNER_MAX_CASES", 500)
     if max_cases and case_count > max_cases:
         raise HostedRunnerBuildError(
-            f"phone simulation selected {case_count} scenario rows but a leased-"
-            f"number run is capped at {max_cases}; split it into smaller runs "
-            "or raise HOSTED_RUNNER_LEASED_ROOM_MAX_CASES"
+            f"hosted voice run selected {case_count} scenario rows but a run is "
+            f"capped at {max_cases}; split it into smaller runs or raise "
+            "HOSTED_RUNNER_MAX_CASES"
         )
     max_wallclock = _positive_setting(
+        "HOSTED_RUNNER_MAX_WALLCLOCK_SECONDS", 6 * 60 * 60
+    )
+    if max_wallclock and estimated > max_wallclock:
+        raise HostedRunnerBuildError(
+            f"hosted voice run would reserve a runner slot about "
+            f"{int(estimated // 60)} min ({case_count} rows at "
+            f"{max_call_minutes} min each), over the {int(max_wallclock // 60)} "
+            "min cap; reduce the row count or the per-call ceiling, chunk the "
+            "run, or raise HOSTED_RUNNER_MAX_WALLCLOCK_SECONDS"
+        )
+
+    if not leased_room:
+        return
+
+    max_leased_cases = _positive_setting("HOSTED_RUNNER_LEASED_ROOM_MAX_CASES", 25)
+    if max_leased_cases and case_count > max_leased_cases:
+        raise HostedRunnerBuildError(
+            f"phone simulation selected {case_count} scenario rows but a leased-"
+            f"number run is capped at {max_leased_cases}; split it into smaller "
+            "runs or raise HOSTED_RUNNER_LEASED_ROOM_MAX_CASES"
+        )
+    max_leased_wallclock = _positive_setting(
         "HOSTED_RUNNER_LEASED_ROOM_MAX_WALLCLOCK_SECONDS", 4 * 60 * 60
     )
-    if max_wallclock:
-        estimated = _leased_room_run_seconds(
-            case_count, _max_seconds_for(max_call_minutes)
+    if max_leased_wallclock and estimated > max_leased_wallclock:
+        raise HostedRunnerBuildError(
+            f"phone simulation would hold the leased number about "
+            f"{int(estimated // 60)} min ({case_count} rows at "
+            f"{max_call_minutes} min each), over the "
+            f"{int(max_leased_wallclock // 60)} min cap; reduce the row count or "
+            "the per-call ceiling, or raise "
+            "HOSTED_RUNNER_LEASED_ROOM_MAX_WALLCLOCK_SECONDS"
         )
-        if estimated > max_wallclock:
-            raise HostedRunnerBuildError(
-                f"phone simulation would hold the leased number about "
-                f"{int(estimated // 60)} min ({case_count} rows at "
-                f"{max_call_minutes} min each), over the "
-                f"{int(max_wallclock // 60)} min cap; reduce the row count or "
-                "the per-call ceiling, or raise "
-                "HOSTED_RUNNER_LEASED_ROOM_MAX_WALLCLOCK_SECONDS"
-            )
 
 
 def _build_voice_job(
@@ -606,22 +672,30 @@ def _build_voice_job(
     # originator) serves one scenario per leased room; a multi-scenario run
     # is refused unless reuse is switched on (D10).
     originator = _provider_profile(provider)["sip_inbound_originator"]
-    if transport_kind == "sip_inbound" and originator:
-        if len(dataset) > 1 and not _leased_room_reuse_enabled():
-            raise HostedRunnerBuildError(
-                f"phone simulation selected {len(dataset)} scenario rows but "
-                "this runner serves one scenario per leased number; select a "
-                "single scenario row, or enable HOSTED_RUNNER_LEASED_ROOM_REUSE "
-                "on a runner whose simulator kit supports sequential room "
-                "reuse"
-            )
-        # The whole run holds the one scarce leased number for its full
-        # wall-clock, so bound it before any number is leased (D15 dropped the
-        # old flat ceilings; these replace them with settings-tunable ones).
-        _enforce_leased_room_admission(
-            len(dataset),
-            max_call_minutes=_max_call_minutes(simulator_agent),
+    leased_room = transport_kind == "sip_inbound" and bool(originator)
+    # A run whose target DIALS our leased number serves one scenario per leased
+    # room; a multi-scenario run is refused unless reuse is switched on (D10).
+    if leased_room and len(dataset) > 1 and not _leased_room_reuse_enabled():
+        raise HostedRunnerBuildError(
+            f"phone simulation selected {len(dataset)} scenario rows but "
+            "this runner serves one scenario per leased number; select a "
+            "single scenario row, or enable HOSTED_RUNNER_LEASED_ROOM_REUSE "
+            "on a runner whose simulator kit supports sequential room "
+            "reuse"
         )
+    # Every hosted voice job reserves a runner child slot for its full
+    # wall-clock (telephony and single-concurrency web runs are serial), and a
+    # leased-DID run also holds the one scarce number; bound the reservation
+    # before the workflow is dispatched (D15 dropped the old flat ceilings;
+    # these replace them with settings-tunable global and leased caps).
+    _enforce_hosted_voice_admission(
+        len(dataset),
+        max_call_minutes=_max_call_minutes(simulator_agent),
+        effective_concurrency=_effective_voice_concurrency(
+            transport_kind, _target_max_concurrency(credentials), len(dataset)
+        ),
+        leased_room=leased_room,
+    )
 
     secret_env: list[dict[str, Any]] = []
     agent_def, target_secret = _voice_agent_definition(
@@ -657,7 +731,7 @@ def _build_voice_job(
                 max_concurrency=_target_max_concurrency(credentials),
                 max_call_minutes=_max_call_minutes(simulator_agent),
                 target_speaks_first=target_speaks_first,
-                leased_room=(transport_kind == "sip_inbound" and bool(originator)),
+                leased_room=leased_room,
             ),
         },
         "sink": {
@@ -1106,7 +1180,6 @@ def _voice_params(
     target_speaks_first: bool | None = None,
     leased_room: bool = False,
 ) -> dict[str, Any]:
-    is_telephony = transport_kind in {"sip_inbound", "sip_outbound"}
     # Who opens the conversation. The explicit ``target_speaks_first`` toggle on
     # the agent definition wins when set (True: wait for the target's greeting;
     # False: the simulator opens). When unset (None), fall back to the target's
@@ -1133,8 +1206,8 @@ def _voice_params(
         conversation_direction = ConversationDirection.SIMULATOR_FIRST
     # Telephone leases a single DID, so the engine keeps those cases serial
     # regardless of the requested ceiling; mirror that here for the deadline.
-    effective_concurrency = (
-        1 if is_telephony else max(1, min(int(max_concurrency or 1), case_count))
+    effective_concurrency = _effective_voice_concurrency(
+        transport_kind, max_concurrency, case_count
     )
 
     connect_timeout = _CONNECT_TIMEOUT_SECONDS

@@ -36,6 +36,10 @@ from simulate.services.hosted_harness import (
     register_attempt,
     request_cancellation,
 )
+from simulate.services.hosted_harness_diagnostics import (
+    DaytonaDiagnostics,
+    poll_daytona_diagnostics,
+)
 from tfc.settings.settings import UPLOAD_BUCKET_NAME
 from tfc.utils.storage_client import ensure_bucket, get_storage_client
 
@@ -77,6 +81,7 @@ _DIRECT_IMAGE_WITH_ADJUSTMENTS = "direct-image-adjustments-v1"
 _SIMULATOR_SECRETS_PATH = "/run/futureagi/simulator-secrets.json"
 _SIMULATOR_VERTEX_CREDENTIALS_PATH = "/run/futureagi/simulator-vertex-sa.json"
 _PROVIDER_POLL_TIMEOUT_SECONDS = 15
+_DIAGNOSTICS_POLL_INTERVAL_SECONDS = 15
 _PROGRESS_FILE_TIMEOUT_SECONDS = 5
 _PROVIDER_UNREACHABLE_GRACE_SECONDS = 180
 
@@ -1922,6 +1927,42 @@ class DaytonaHostedGateway:
             attempt.job = job
             return attempt
 
+    @staticmethod
+    def _capture_diagnostics(
+        attempt: HostedHarnessAttempt,
+        sandbox,
+        *,
+        command_id: str | None = None,
+        command: Any | None = None,
+        final: bool = False,
+    ) -> DaytonaDiagnostics | None:
+        if (
+            not final
+            and attempt.diagnostics_captured_at
+            and (timezone.now() - attempt.diagnostics_captured_at).total_seconds()
+            < _DIAGNOSTICS_POLL_INTERVAL_SECONDS
+        ):
+            return None
+        try:
+            target_secrets = PlatformSecretResolver().resolve(attempt.job)
+            simulator_secrets = resolve_platform_simulator_secrets()
+        except Exception as exc:  # noqa: BLE001 - unsafe logs must not be persisted
+            attempt.diagnostics_error = f"redaction:{type(exc).__name__}"
+            attempt.save(update_fields=["diagnostics_error", "updated_at"])
+            logger.exception(
+                "could not resolve diagnostics redaction inputs attempt=%s", attempt.id
+            )
+            return None
+        return poll_daytona_diagnostics(
+            attempt,
+            sandbox,
+            session_id=_ENTRYPOINT_SESSION,
+            command_id=command_id,
+            command=command,
+            final=final,
+            secret_values=[*target_secrets.values(), *simulator_secrets.values()],
+        )
+
     def inspect(self, attempt: HostedHarnessAttempt) -> dict[str, Any]:
         sandbox = self.client.get(
             str(attempt.provider_ref),
@@ -1948,43 +1989,21 @@ class DaytonaHostedGateway:
             "exit_code": command.exit_code,
             "status": getattr(command, "status", None),
             "logs": "",
+            "process_logs": "",
         }
+        capture = self._capture_diagnostics(
+            attempt,
+            sandbox,
+            command_id=command_id,
+            command=command,
+            final=command.exit_code is not None,
+        )
+        if capture is not None:
+            observation["logs"] = capture.entrypoint_log[-8000:]
+            observation["process_logs"] = capture.process_logs[-16000:]
         if command.exit_code is not None:
-            # Capture the guest's combined stdout/stderr before the sandbox is
-            # torn down, so crashes are diagnosable without keeping sandboxes.
-            try:
-                logs = sandbox.process.get_session_command_logs(
-                    _ENTRYPOINT_SESSION,
-                    command_id,
-                    request_timeout=_PROVIDER_POLL_TIMEOUT_SECONDS,
-                )
-                text = getattr(logs, "output", None) or "\n".join(
-                    part
-                    for part in (
-                        getattr(logs, "stdout", ""),
-                        getattr(logs, "stderr", ""),
-                    )
-                    if part
-                )
-                observation["logs"] = (text or "")[-8000:]
-            except Exception:  # noqa: BLE001
-                observation["logs"] = ""
-            # The agent/tools-api/postgres run as CHILD processes; their stdout/stderr goes to
-            # per-world/build process.log files, never the entrypoint's own stream. Collect their
-            # tails too -- an "agent did not become ready" failure is only diagnosable from the
-            # agent's own log (STT/LLM/TTS init), which the entrypoint stream never sees.
-            try:
-                child = sandbox.process.exec(
-                    "for f in $(find /work/worlds /work/build -name '*.log' 2>/dev/null | sort); do "
-                    'echo "===== $f ====="; tail -120 "$f"; done',
-                    timeout=60,
-                )
-                child_logs = getattr(child, "result", "") or ""
-            except Exception:  # noqa: BLE001
-                child_logs = ""
-            observation["process_logs"] = child_logs[-16000:]
-            # Surface everything to the simulation-runner worker log so failures are visible via
-            # `docker logs temporal-worker-simulation-runner`, not only the truncated receipt tail.
+            # Keep the bounded failure tails in the worker log as well as the durable S3
+            # snapshot so an operator can diagnose a run from either surface.
             logger.info(
                 "hosted guest attempt=%s exit_code=%s\n--- entrypoint ---\n%s\n--- processes ---\n%s",
                 attempt.id,
@@ -2606,6 +2625,11 @@ class DaytonaHostedGateway:
         except DaytonaNotFoundError:
             absent = True
         else:
+            # A terminal poll normally finalized diagnostics already. Launch failures and
+            # forced cancellations can reach cleanup first, so make one last bounded attempt
+            # while the sandbox is still available.
+            if not attempt.diagnostics_final:
+                self._capture_diagnostics(attempt, sandbox, final=True)
             # The last moment the ledger exists: after the delete there is nothing to ask.
             _read_harness_spend(attempt, sandbox)
             self.client.delete(sandbox, timeout=120, wait=True)
@@ -3067,7 +3091,11 @@ def _record_harness_spend(
     payload = dict(job.payload or {})
     metadata = dict(payload.get("metadata") or {})
     recorded = metadata.get("harness_spend")
-    attempts = dict((recorded or {}).get("attempts") or {}) if isinstance(recorded, dict) else {}
+    attempts = (
+        dict((recorded or {}).get("attempts") or {})
+        if isinstance(recorded, dict)
+        else {}
+    )
     key = str(int(attempt_number or 1))
     mine = attempts.get(key)
     if isinstance(mine, dict):
@@ -3082,8 +3110,12 @@ def _record_harness_spend(
         "stages": spend.get("stages") or [],
     }
     metadata["harness_spend"] = {
-        "total_usd": round(sum(float(one.get("total_usd") or 0.0) for one in attempts.values()), 6),
-        "unpriced_turns": sum(int(one.get("unpriced_turns") or 0) for one in attempts.values()),
+        "total_usd": round(
+            sum(float(one.get("total_usd") or 0.0) for one in attempts.values()), 6
+        ),
+        "unpriced_turns": sum(
+            int(one.get("unpriced_turns") or 0) for one in attempts.values()
+        ),
         "attempts": attempts,
     }
     payload["metadata"] = metadata

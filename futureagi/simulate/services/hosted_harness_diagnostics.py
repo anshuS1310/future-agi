@@ -23,17 +23,6 @@ _ENTRYPOINT_LOG_LIMIT_BYTES = 2 * 1024 * 1024
 _PROCESS_LOG_LIMIT_BYTES = 4 * 1024 * 1024
 _MIN_SECRET_FRAGMENT_LENGTH = 8
 _REDACTION_CACHE_LIMIT = 128
-_CREDENTIAL_NAME_MARKERS = (
-    "AUTH",
-    "CREDENTIAL",
-    "KEY",
-    "PASSWORD",
-    "PRIVATE",
-    "SECRET",
-    "TOKEN",
-    "ANI",
-    "DSN",
-)
 _redaction_cache: dict[str, tuple[str, ...]] = {}
 _redaction_cache_lock = Lock()
 _PROCESS_LOG_COMMAND = (
@@ -69,15 +58,10 @@ class DaytonaDiagnostics:
     exit_code: int | None
 
 
-def credential_redaction_values(
+def redaction_values(
     values: Mapping[str, Any], *, extra: Iterable[str] = ()
 ) -> tuple[str, ...]:
-    selected = [
-        str(value)
-        for name, value in values.items()
-        if value
-        and any(marker in str(name).upper() for marker in _CREDENTIAL_NAME_MARKERS)
-    ]
+    selected = [str(value) for value in values.values() if value]
     selected.extend(str(value) for value in extra if value)
     return tuple(selected)
 

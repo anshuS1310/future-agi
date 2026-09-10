@@ -40,9 +40,9 @@ from simulate.services.hosted_harness_diagnostics import (
     DaytonaDiagnostics,
     cache_attempt_redaction_values,
     cached_attempt_redaction_values,
-    credential_redaction_values,
     forget_attempt_redaction_values,
     poll_daytona_diagnostics,
+    redaction_values,
 )
 from tfc.settings.settings import UPLOAD_BUCKET_NAME
 from tfc.utils.storage_client import ensure_bucket, get_storage_client
@@ -1637,7 +1637,7 @@ class DaytonaHostedGateway:
         attempt = capability.attempt
         cache_attempt_redaction_values(
             attempt.id,
-            credential_redaction_values(
+            redaction_values(
                 {**secrets_map, **simulator_env},
                 extra=(simulator_vertex_credentials.decode("utf-8", errors="replace"),)
                 if simulator_vertex_credentials
@@ -1964,9 +1964,7 @@ class DaytonaHostedGateway:
                 simulator_secrets = resolve_platform_simulator_secrets()
                 secret_values = cache_attempt_redaction_values(
                     attempt.id,
-                    credential_redaction_values(
-                        {**target_secrets, **simulator_secrets}
-                    ),
+                    redaction_values({**target_secrets, **simulator_secrets}),
                 )
             except Exception as exc:  # noqa: BLE001 - unsafe logs must not be persisted
                 attempt.diagnostics_error = f"redaction:{type(exc).__name__}"

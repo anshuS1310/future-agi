@@ -1239,7 +1239,9 @@ def test_gateway_polls_diagnostics_to_s3_and_finalizes_before_cleanup(
     ).attempt
     client = _Daytona()
     process = client.sandbox.process
-    process.entrypoint_output = "production prod true 13 target-secret\nwaiting"
+    process.entrypoint_output = (
+        "production prod true 13 target-secret custom-secret-value\nwaiting"
+    )
     process.process_output = "worker simulator-secret\nready"
     uploaded = []
 
@@ -1260,6 +1262,7 @@ def test_gateway_polls_diagnostics_to_s3_and_finalizes_before_cleanup(
             "TARGET_API_KEY": "target-secret",
             "SHORT_API_KEY": "prod",
             "FEATURE_FLAG": "true",
+            "STRIPE_SK": "custom-secret-value",
         }
 
     monkeypatch.setattr(
@@ -1277,7 +1280,9 @@ def test_gateway_polls_diagnostics_to_s3_and_finalizes_before_cleanup(
     attempt.refresh_from_db()
     running = json.loads(gzip.decompress(uploaded[-1]))
     assert running["final"] is False
-    assert running["entrypoint_log"] == "production prod true 13 [REDACTED]\nwaiting"
+    assert running["entrypoint_log"] == (
+        "production prod true 13 [REDACTED] [REDACTED]\nwaiting"
+    )
     assert running["process_logs"] == "worker [REDACTED]\nready"
     assert attempt.diagnostics_final is False
     assert attempt.diagnostics_object_key.endswith(f"/{attempt.id}.json.gz")

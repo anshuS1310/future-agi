@@ -34962,7 +34962,6 @@ export const SimulateApiHarnessJobsListResponseItem = zod.object({
   runtime: zod
     .object({
       sandbox_id: zod.string().min(1).optional(),
-      snapshot_name: zod.string().min(1).optional(),
       diagnostics: zod
         .object({
           object_key: zod.string().min(1).optional(),
@@ -35730,7 +35729,6 @@ export const SimulateApiHarnessJobsReadResponse = zod.object({
   runtime: zod
     .object({
       sandbox_id: zod.string().min(1).optional(),
-      snapshot_name: zod.string().min(1).optional(),
       diagnostics: zod
         .object({
           object_key: zod.string().min(1).optional(),
@@ -35851,7 +35849,6 @@ export const SimulateApiHarnessJobsCancelResponse = zod.object({
   runtime: zod
     .object({
       sandbox_id: zod.string().min(1).optional(),
-      snapshot_name: zod.string().min(1).optional(),
       diagnostics: zod
         .object({
           object_key: zod.string().min(1).optional(),

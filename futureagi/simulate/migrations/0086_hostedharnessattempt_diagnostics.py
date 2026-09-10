@@ -15,12 +15,12 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name="hostedharnessattempt",
             name="diagnostics_error",
-            field=models.CharField(blank=True, default="", max_length=500),
+            field=models.CharField(blank=True, max_length=500, null=True),
         ),
         migrations.AddField(
             model_name="hostedharnessattempt",
             name="diagnostics_final",
-            field=models.BooleanField(default=False),
+            field=models.BooleanField(blank=True, null=True),
         ),
         migrations.AddField(
             model_name="hostedharnessattempt",
@@ -35,6 +35,6 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name="hostedharnessattempt",
             name="diagnostics_size",
-            field=models.BigIntegerField(default=0),
+            field=models.BigIntegerField(blank=True, null=True),
         ),
     ]

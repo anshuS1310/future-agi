@@ -16939,8 +16939,6 @@ export interface HarnessDiagnosticsApi {
 export interface HarnessRuntimeReadApi {
   /** @minLength 1 */
   sandbox_id?: string;
-  /** @minLength 1 */
-  snapshot_name?: string;
   diagnostics?: HarnessDiagnosticsApi;
 }
 

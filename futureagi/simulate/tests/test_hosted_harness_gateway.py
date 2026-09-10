@@ -1239,7 +1239,7 @@ def test_gateway_polls_diagnostics_to_s3_and_finalizes_before_cleanup(
     ).attempt
     client = _Daytona()
     process = client.sandbox.process
-    process.entrypoint_output = "boot target-secret\nwaiting"
+    process.entrypoint_output = "production prod true 13 target-secret\nwaiting"
     process.process_output = "worker simulator-secret\nready"
     uploaded = []
 
@@ -1252,9 +1252,19 @@ def test_gateway_polls_diagnostics_to_s3_and_finalizes_before_cleanup(
         "simulate.services.hosted_harness_diagnostics.get_storage_client",
         lambda: _Storage(),
     )
+    resolver_calls = []
+
+    def _resolve_target_secrets(_resolver, _job):
+        resolver_calls.append(_job.id)
+        return {
+            "TARGET_API_KEY": "target-secret",
+            "SHORT_API_KEY": "prod",
+            "FEATURE_FLAG": "true",
+        }
+
     monkeypatch.setattr(
         "simulate.services.hosted_harness_gateway.PlatformSecretResolver.resolve",
-        lambda _resolver, _job: {"TARGET_API_KEY": "target-secret"},
+        _resolve_target_secrets,
     )
     monkeypatch.setattr(
         "simulate.services.hosted_harness_gateway.resolve_platform_simulator_secrets",
@@ -1267,7 +1277,7 @@ def test_gateway_polls_diagnostics_to_s3_and_finalizes_before_cleanup(
     attempt.refresh_from_db()
     running = json.loads(gzip.decompress(uploaded[-1]))
     assert running["final"] is False
-    assert running["entrypoint_log"] == "boot [REDACTED]\nwaiting"
+    assert running["entrypoint_log"] == "production prod true 13 [REDACTED]\nwaiting"
     assert running["process_logs"] == "worker [REDACTED]\nready"
     assert attempt.diagnostics_final is False
     assert attempt.diagnostics_object_key.endswith(f"/{attempt.id}.json.gz")
@@ -1286,9 +1296,9 @@ def test_gateway_polls_diagnostics_to_s3_and_finalizes_before_cleanup(
     assert attempt.diagnostics_final is True
     assert attempt.diagnostics_size == len(uploaded[-1])
     assert client.lifecycle[-2:] == ["upload", "delete"]
+    assert resolver_calls == [job.id]
     assert serialize_job(job)["runtime"] == {
         "sandbox_id": "sandbox-1",
-        "snapshot_name": "alk-hosted-v1",
         "diagnostics": {
             "object_key": attempt.diagnostics_object_key,
             "sha256": attempt.diagnostics_sha256,

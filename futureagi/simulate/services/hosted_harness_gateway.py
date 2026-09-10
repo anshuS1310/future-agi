@@ -38,6 +38,10 @@ from simulate.services.hosted_harness import (
 )
 from simulate.services.hosted_harness_diagnostics import (
     DaytonaDiagnostics,
+    cache_attempt_redaction_values,
+    cached_attempt_redaction_values,
+    credential_redaction_values,
+    forget_attempt_redaction_values,
     poll_daytona_diagnostics,
 )
 from tfc.settings.settings import UPLOAD_BUCKET_NAME
@@ -1631,6 +1635,15 @@ class DaytonaHostedGateway:
             snapshot_digest=(self.snapshot_digest or None) if self.snapshot else None,
         )
         attempt = capability.attempt
+        cache_attempt_redaction_values(
+            attempt.id,
+            credential_redaction_values(
+                {**secrets_map, **simulator_env},
+                extra=(simulator_vertex_credentials.decode("utf-8", errors="replace"),)
+                if simulator_vertex_credentials
+                else (),
+            ),
+        )
         # Record provenance digests on the attempt.
         if commit_sha:
             attempt.source_digest = (
@@ -1919,6 +1932,7 @@ class DaytonaHostedGateway:
                 )
             else:
                 job = self._delete_and_record(attempt, retry_pending=retry_pending)
+            forget_attempt_redaction_values(attempt.id)
             # Launch failures are part of the same durable retry protocol as guest crashes.
             # Returning the recorded attempt lets the workflow observe RETRY_WAIT and create a
             # genuinely fresh attempt after its configured backoff.  Raising here delegates to
@@ -1943,25 +1957,38 @@ class DaytonaHostedGateway:
             < _DIAGNOSTICS_POLL_INTERVAL_SECONDS
         ):
             return None
+        secret_values = cached_attempt_redaction_values(attempt.id)
+        if secret_values is None:
+            try:
+                target_secrets = PlatformSecretResolver().resolve(attempt.job)
+                simulator_secrets = resolve_platform_simulator_secrets()
+                secret_values = cache_attempt_redaction_values(
+                    attempt.id,
+                    credential_redaction_values(
+                        {**target_secrets, **simulator_secrets}
+                    ),
+                )
+            except Exception as exc:  # noqa: BLE001 - unsafe logs must not be persisted
+                attempt.diagnostics_error = f"redaction:{type(exc).__name__}"
+                attempt.save(update_fields=["diagnostics_error", "updated_at"])
+                logger.exception(
+                    "could not resolve diagnostics redaction inputs attempt=%s",
+                    attempt.id,
+                )
+                return None
         try:
-            target_secrets = PlatformSecretResolver().resolve(attempt.job)
-            simulator_secrets = resolve_platform_simulator_secrets()
-        except Exception as exc:  # noqa: BLE001 - unsafe logs must not be persisted
-            attempt.diagnostics_error = f"redaction:{type(exc).__name__}"
-            attempt.save(update_fields=["diagnostics_error", "updated_at"])
-            logger.exception(
-                "could not resolve diagnostics redaction inputs attempt=%s", attempt.id
+            return poll_daytona_diagnostics(
+                attempt,
+                sandbox,
+                session_id=_ENTRYPOINT_SESSION,
+                command_id=command_id,
+                command=command,
+                final=final,
+                secret_values=secret_values,
             )
-            return None
-        return poll_daytona_diagnostics(
-            attempt,
-            sandbox,
-            session_id=_ENTRYPOINT_SESSION,
-            command_id=command_id,
-            command=command,
-            final=final,
-            secret_values=[*target_secrets.values(), *simulator_secrets.values()],
-        )
+        finally:
+            if final:
+                forget_attempt_redaction_values(attempt.id)
 
     def inspect(self, attempt: HostedHarnessAttempt) -> dict[str, Any]:
         sandbox = self.client.get(
@@ -2308,6 +2335,7 @@ class DaytonaHostedGateway:
             attempt.save(
                 update_fields=["terminal_stage", "terminal_reason", "updated_at"]
             )
+            forget_attempt_redaction_values(attempt.id)
             return record_cleanup(
                 attempt.id,
                 provider_ref=str(attempt.provider_ref),
@@ -2406,6 +2434,7 @@ class DaytonaHostedGateway:
                     ]
                 )
                 retry_pending = self._should_retry(attempt, "infrastructure")
+            forget_attempt_redaction_values(attempt.id)
             return record_cleanup(
                 attempt.id,
                 provider_ref=str(attempt.provider_ref),

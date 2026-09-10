@@ -86295,11 +86295,6 @@ export const OPENAPI_CONTRACT = Object.freeze({
           type: "string",
           minLength: 1,
         },
-        snapshot_name: {
-          title: "Snapshot name",
-          type: "string",
-          minLength: 1,
-        },
         diagnostics: {
           $ref: "#/definitions/HarnessDiagnostics",
         },

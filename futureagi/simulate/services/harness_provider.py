@@ -212,13 +212,11 @@ def serialize_job(job: HostedHarnessJob) -> dict[str, Any]:
     if attempt:
         if attempt.provider_ref:
             runtime["sandbox_id"] = attempt.provider_ref
-        if attempt.snapshot_name:
-            runtime["snapshot_name"] = attempt.snapshot_name
         if attempt.diagnostics_object_key or attempt.diagnostics_error:
             diagnostics = {
-                "size": attempt.diagnostics_size,
-                "final": attempt.diagnostics_final,
-                "error": attempt.diagnostics_error,
+                "size": attempt.diagnostics_size or 0,
+                "final": bool(attempt.diagnostics_final),
+                "error": attempt.diagnostics_error or "",
             }
             if attempt.diagnostics_object_key:
                 diagnostics["object_key"] = attempt.diagnostics_object_key

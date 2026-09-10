@@ -6,8 +6,9 @@ import io
 import json
 import logging
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from threading import Lock
 from typing import Any
 
 from django.utils import timezone
@@ -20,6 +21,21 @@ logger = logging.getLogger("simulate.hosted_harness_diagnostics")
 
 _ENTRYPOINT_LOG_LIMIT_BYTES = 2 * 1024 * 1024
 _PROCESS_LOG_LIMIT_BYTES = 4 * 1024 * 1024
+_MIN_SECRET_FRAGMENT_LENGTH = 8
+_REDACTION_CACHE_LIMIT = 128
+_CREDENTIAL_NAME_MARKERS = (
+    "AUTH",
+    "CREDENTIAL",
+    "KEY",
+    "PASSWORD",
+    "PRIVATE",
+    "SECRET",
+    "TOKEN",
+    "ANI",
+    "DSN",
+)
+_redaction_cache: dict[str, tuple[str, ...]] = {}
+_redaction_cache_lock = Lock()
 _PROCESS_LOG_COMMAND = (
     "for f in $(find /work/authoring /work/build /work/worlds "
     "-type f -name '*.log' 2>/dev/null | sort); do "
@@ -53,6 +69,42 @@ class DaytonaDiagnostics:
     exit_code: int | None
 
 
+def credential_redaction_values(
+    values: Mapping[str, Any], *, extra: Iterable[str] = ()
+) -> tuple[str, ...]:
+    selected = [
+        str(value)
+        for name, value in values.items()
+        if value
+        and any(marker in str(name).upper() for marker in _CREDENTIAL_NAME_MARKERS)
+    ]
+    selected.extend(str(value) for value in extra if value)
+    return tuple(selected)
+
+
+def cache_attempt_redaction_values(
+    attempt_id: Any, values: Iterable[str]
+) -> tuple[str, ...]:
+    key = str(attempt_id)
+    cached = tuple(values)
+    with _redaction_cache_lock:
+        _redaction_cache.pop(key, None)
+        if len(_redaction_cache) >= _REDACTION_CACHE_LIMIT:
+            _redaction_cache.pop(next(iter(_redaction_cache)))
+        _redaction_cache[key] = cached
+    return cached
+
+
+def cached_attempt_redaction_values(attempt_id: Any) -> tuple[str, ...] | None:
+    with _redaction_cache_lock:
+        return _redaction_cache.get(str(attempt_id))
+
+
+def forget_attempt_redaction_values(attempt_id: Any) -> None:
+    with _redaction_cache_lock:
+        _redaction_cache.pop(str(attempt_id), None)
+
+
 def _json_string_values(value: Any) -> Iterable[str]:
     if isinstance(value, str):
         yield value
@@ -68,14 +120,16 @@ def _secret_fragments(values: Iterable[str]) -> list[str]:
     fragments: set[str] = set()
     for value in values:
         text = str(value or "")
-        if len(text) >= 4:
+        if len(text) >= _MIN_SECRET_FRAGMENT_LENGTH:
             fragments.add(text)
         try:
             document = json.loads(text)
         except (TypeError, ValueError):
             continue
         fragments.update(
-            item for item in _json_string_values(document) if len(item) >= 4
+            item
+            for item in _json_string_values(document)
+            if len(item) >= _MIN_SECRET_FRAGMENT_LENGTH
         )
     return sorted(fragments, key=len, reverse=True)
 

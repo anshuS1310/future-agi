@@ -562,7 +562,6 @@ class HarnessDiagnosticsSerializer(serializers.Serializer):
 
 class HarnessRuntimeReadSerializer(serializers.Serializer):
     sandbox_id = serializers.CharField(required=False)
-    snapshot_name = serializers.CharField(required=False)
     diagnostics = HarnessDiagnosticsSerializer(required=False)
 
 

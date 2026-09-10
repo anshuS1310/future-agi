@@ -28,12 +28,13 @@ class CreateEvalTemplateInput(PydanticBaseModel):
     description: Optional[str] = Field(
         default=None, description="Description of what this evaluation measures"
     )
-    eval_type: Literal["llm", "code", "agent"] = Field(
-        default="llm",
+    eval_type: Optional[Literal["llm", "code", "agent"]] = Field(
+        default=None,
         description=(
-            "Type of evaluation: 'llm' (LLM-as-a-judge — uses an LLM to evaluate, "
-            "recommended default), 'code' (custom Python/JavaScript code), "
-            "or 'agent' (Falcon AI powered, uses agent loop with tools)."
+            "Type of evaluation. Leave unset unless the user asks for a specific type: "
+            "omitting it creates an 'agent' eval (Falcon AI powered, uses an agent loop "
+            "with tools). Set 'code' for custom Python/JavaScript, or 'llm' for a plain "
+            "LLM-as-a-judge."
         ),
     )
     instructions: Optional[str] = Field(
@@ -177,6 +178,9 @@ class CreateEvalTemplateInput(PydanticBaseModel):
             mapped = _type_map.get(self.template_type)
             if mapped:
                 self.eval_type = mapped
+        # Default to an agent eval. Only reached when the caller named no type at all.
+        if not self.eval_type:
+            self.eval_type = "agent"
         if self.criteria and not self.instructions:
             self.instructions = self.criteria
         if self.choices and not self.choice_scores and self.output_type == "deterministic":
@@ -214,17 +218,18 @@ class CreateEvalTemplateTool(BaseTool):
     name = "create_eval_template"
     description = (
         "Creates an evaluation template that can be run on datasets, prompts, or traces. "
-        "Three eval types are supported:\n"
-        "- **llm** (LLM-as-a-Judge): Provide instructions with {{variable}} placeholders. "
-        "An LLM evaluates each row by substituting variables with column values. "
-        "Best for subjective quality, relevance, safety, and semantic checks. "
-        "Supports few_shot_examples and messages for multi-turn prompting.\n"
+        "Three eval types are supported, and 'agent' is the default when eval_type is "
+        "omitted:\n"
+        "- **agent** (default): Uses an AI agent that can call tools, search knowledge "
+        "bases, and reason over multiple turns. Best for complex evaluations needing "
+        "internet, knowledge base grounding, or multi-step analysis of traces/spans.\n"
         "- **code**: Provide Python or JavaScript code with an evaluate() function that "
         "receives kwargs and returns True/False, a 0-1 score, or {result, reason}. "
         "Runs in a sandbox. Best for deterministic, rule-based checks (regex, format, exact match).\n"
-        "- **agent**: Uses an AI agent that can call tools, search knowledge bases, and "
-        "reason over multiple turns. Best for complex evaluations needing internet, "
-        "knowledge base grounding, or multi-step analysis of traces/spans.\n\n"
+        "- **llm** (LLM-as-a-Judge): Provide instructions with {{variable}} placeholders. "
+        "An LLM evaluates each row by substituting variables with column values. "
+        "Supports few_shot_examples and messages for multi-turn prompting.\n\n"
+        "Only set eval_type when the user asks for a particular type.\n\n"
         "Use list_eval_templates to see existing templates first."
     )
     category = "evaluations"

@@ -571,6 +571,7 @@ def test_create_rejects_non_platform_vault_secret_ref(user):
     client.force_authenticate(user=user)
     payload = _v1_payload()
     payload["agent"]["secret_refs"] = {
+        **_LIVEKIT_REFS,
         "GOOGLE_CREDS": {
             "manager": "platform-vault",
             "key": "gcp-sa",
@@ -598,6 +599,9 @@ def test_create_rejects_non_platform_vault_secret_ref(user):
         ),
         patch("simulate.temporal.client.start_hosted_harness_gateway_workflow"),
         patch(
+            "simulate.services.harness_provider._validate_required_credential_files"
+        ),
+        patch(
             "simulate.services.harness_provider.serialize_job",
             return_value={"job": {}, "status": {}},
         ),
@@ -608,4 +612,4 @@ def test_create_rejects_non_platform_vault_secret_ref(user):
             format="json",
             HTTP_IDEMPOTENCY_KEY="secret-ok",
         )
-    assert response.status_code == 202
+    assert response.status_code == 202, response.data

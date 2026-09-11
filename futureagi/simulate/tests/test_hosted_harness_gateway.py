@@ -38,6 +38,7 @@ from simulate.services.hosted_harness_gateway import (
     attach_platform_simulator_secret_refs,
     detect_source_connectors,
     detect_source_credentials,
+    guest_failure_cause,
     pack_authoring_archive,
     prepare_dispatch_payload,
     resolve_authored_connector,
@@ -49,6 +50,17 @@ from simulate.services.hosted_harness_gateway import (
 def _isolate_platform_simulator_environment(settings):
     """Tests opt in explicitly instead of reading the developer machine's provider keys."""
     settings.ALK_HOSTED_SIMULATOR_SECRET_ENV = {}
+
+
+def test_guest_failure_cause_preserves_legacy_runnable_entrypoint_blocker() -> None:
+    assert guest_failure_cause(
+        "runtime validation: attempt 5/5\n"
+        "  - lookup_account: no runnable shipped entrypoint was identified; "
+        "expose the real implementation as an importable callable or an HTTP service\n"
+    ) == (
+        "lookup_account: no runnable shipped entrypoint was identified; "
+        "expose the real implementation as an importable callable or an HTTP service"
+    )
 
 
 def test_platform_simulator_material_uses_deployment_credentials_only(
@@ -670,8 +682,36 @@ def test_dispatch_payload_mirrors_only_livekit_url():
     assert dispatched["agent"]["config"] == {
         "livekit_url": "wss://customer.livekit.cloud"
     }
+    assert dispatched["metadata"]["environment_value_names"] == [
+        "LIVEKIT_API_KEY",
+        "LIVEKIT_API_SECRET",
+        "LIVEKIT_URL",
+    ]
     assert payload["agent"]["config"] == {}
     assert "must-not-be-copied" not in json.dumps(dispatched)
+
+
+def test_dispatch_payload_declares_resolved_adc_names_without_values():
+    payload = {
+        "agent": {"connector": "auto", "config": {}},
+        "metadata": {"environment_value_names": ["MODEL_NAME"]},
+    }
+
+    dispatched = prepare_dispatch_payload(
+        payload,
+        {
+            "GOOGLE_APPLICATION_CREDENTIALS_JSON": "must-not-be-copied",
+            "GOOGLE_CLOUD_PROJECT": "futureagi",
+        },
+    )
+
+    assert dispatched["metadata"]["environment_value_names"] == [
+        "GOOGLE_APPLICATION_CREDENTIALS_JSON",
+        "GOOGLE_CLOUD_PROJECT",
+        "MODEL_NAME",
+    ]
+    assert "must-not-be-copied" not in json.dumps(dispatched)
+    assert payload["metadata"] == {"environment_value_names": ["MODEL_NAME"]}
 
 
 @pytest.mark.parametrize("connector", ["vapi", "retell"])

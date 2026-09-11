@@ -526,6 +526,18 @@ def guest_failure_cause(tail: str) -> str:
         match = _GUEST_CAUSE_LINE.search(line)
         if match:
             cause = match.group(1).strip().rstrip(":")
+    if not cause:
+        # Older authoring guests printed RuntimeValidationError.detail without
+        # the exception class. Preserve the most actionable deterministic
+        # build blocker instead of replacing it with a generic validation label.
+        actionable = (
+            "no runnable shipped entrypoint was identified",
+            "Cannot create a truthful test environment",
+        )
+        for line in text.splitlines():
+            cleaned = line.strip().removeprefix("- ").strip()
+            if any(marker in cleaned for marker in actionable):
+                cause = cleaned
     inner = _GUEST_INNER_EXCEPTION.findall(text)
     if inner:
         name, detail = inner[-1]
@@ -3009,6 +3021,18 @@ def prepare_dispatch_payload(
     """
     dispatched = dict(payload)
     agent = dict(dispatched.get("agent") or {})
+    # The secret values remain exclusively in the one-shot secrets file, but ALK's
+    # bundle preflight still needs to know which environment names were resolved.
+    # Without this names-only declaration, alternative credential groups (notably
+    # uploaded Google ADC + project) are incorrectly reported as unsatisfied.
+    metadata = dict(dispatched.get("metadata") or {})
+    metadata["environment_value_names"] = sorted(
+        {
+            *(str(name).upper() for name in metadata.get("environment_value_names", [])),
+            *(str(name).upper() for name in secrets_map),
+        }
+    )
+    dispatched["metadata"] = metadata
     config = dict(agent.get("config") or {})
     connector = str(agent.get("connector") or "").lower()
     # LiveKit targets use the customer's signaling URL. Provider-hosted voice

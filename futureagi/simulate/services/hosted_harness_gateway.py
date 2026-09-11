@@ -2989,6 +2989,18 @@ def prepare_dispatch_payload(
     """
     dispatched = dict(payload)
     agent = dict(dispatched.get("agent") or {})
+    # The secret values remain exclusively in the one-shot secrets file, but ALK's
+    # bundle preflight still needs to know which environment names were resolved.
+    # Without this names-only declaration, alternative credential groups (notably
+    # uploaded Google ADC + project) are incorrectly reported as unsatisfied.
+    metadata = dict(dispatched.get("metadata") or {})
+    metadata["environment_value_names"] = sorted(
+        {
+            *(str(name).upper() for name in metadata.get("environment_value_names", [])),
+            *(str(name).upper() for name in secrets_map),
+        }
+    )
+    dispatched["metadata"] = metadata
     config = dict(agent.get("config") or {})
     connector = str(agent.get("connector") or "").lower()
     # LiveKit targets use the customer's signaling URL. Provider-hosted voice

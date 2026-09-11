@@ -682,8 +682,36 @@ def test_dispatch_payload_mirrors_only_livekit_url():
     assert dispatched["agent"]["config"] == {
         "livekit_url": "wss://customer.livekit.cloud"
     }
+    assert dispatched["metadata"]["environment_value_names"] == [
+        "LIVEKIT_API_KEY",
+        "LIVEKIT_API_SECRET",
+        "LIVEKIT_URL",
+    ]
     assert payload["agent"]["config"] == {}
     assert "must-not-be-copied" not in json.dumps(dispatched)
+
+
+def test_dispatch_payload_declares_resolved_adc_names_without_values():
+    payload = {
+        "agent": {"connector": "auto", "config": {}},
+        "metadata": {"environment_value_names": ["MODEL_NAME"]},
+    }
+
+    dispatched = prepare_dispatch_payload(
+        payload,
+        {
+            "GOOGLE_APPLICATION_CREDENTIALS_JSON": "must-not-be-copied",
+            "GOOGLE_CLOUD_PROJECT": "futureagi",
+        },
+    )
+
+    assert dispatched["metadata"]["environment_value_names"] == [
+        "GOOGLE_APPLICATION_CREDENTIALS_JSON",
+        "GOOGLE_CLOUD_PROJECT",
+        "MODEL_NAME",
+    ]
+    assert "must-not-be-copied" not in json.dumps(dispatched)
+    assert payload["metadata"] == {"environment_value_names": ["MODEL_NAME"]}
 
 
 @pytest.mark.parametrize("connector", ["vapi", "retell"])

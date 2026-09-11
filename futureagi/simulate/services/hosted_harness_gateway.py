@@ -160,7 +160,6 @@ def _platform_simulator_material() -> tuple[dict[str, str], bytes | None]:
         "HARNESS_OBSERVABILITY",
         "FI_API_KEY",
         "FI_SECRET_KEY",
-        "FI_BASE_URL",
         "FI_HARNESS_PROJECT",
         # The caller's surroundings. Without these a hosted call is always heard in the clear,
         # whatever the scenario asked for, because the simulator reads them from its environment.
@@ -173,6 +172,15 @@ def _platform_simulator_material() -> tuple[dict[str, str], bytes | None]:
         value = str(os.environ.get(name) or "").strip()
         if value:
             values[name] = value
+    # The sandbox resolves nothing on our network, so the guest's collector is configured
+    # separately and only falls back to ours when they are the same host.
+    collector = str(
+        os.environ.get("ALK_HOSTED_FI_BASE_URL")
+        or os.environ.get("FI_BASE_URL")
+        or ""
+    ).strip()
+    if collector:
+        values["FI_BASE_URL"] = collector
     if project:
         values["GOOGLE_CLOUD_PROJECT"] = project
     if credential_bytes is not None:

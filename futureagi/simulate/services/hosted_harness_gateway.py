@@ -1068,9 +1068,10 @@ def _resolved_egress_domains(
         and simulator_values.get("FI_API_KEY")
         and simulator_values.get("FI_SECRET_KEY")
     ):
-        collector = _hostname_from_url(
-            str(simulator_values.get("FI_BASE_URL") or "https://api.futureagi.com")
-        )
+        # No default: the collector is reached on its own port and the host differs per
+        # environment, so an unset FI_BASE_URL means the guest has nowhere to report and there is
+        # nothing to allow. Guessing one would open a domain that never receives a span.
+        collector = _hostname_from_url(simulator_values.get("FI_BASE_URL"))
         if collector:
             values.append(collector)
     # The simulated caller rides the platform LiveKit server whenever the target connector does

@@ -15,8 +15,6 @@ on:
       push-latest: { required: false, type: boolean, default: false }
       free-disk:   { required: false, type: boolean, default: false }
       cache-scope: { required: true, type: string }
-      extras:      { required: false, type: string, default: '' }   # comma-separated pyproject extras -> Dockerfile.oss EXTRAS build-arg
-      require-extras: { required: false, type: boolean, default: false }  # true => fail if 'extras' is empty (guards against silently shipping a slim image)
     secrets:
       dockerhub-username: { required: true }
       dockerhub-token:    { required: true }
@@ -29,11 +27,6 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     steps:
-      - name: Guard — required extras must not be empty
-        if: ${{ inputs.require-extras && inputs.extras == '' }}
-        run: |
-          echo "::error::image '${{ inputs.image }}' must be built with a non-empty extras set, but 'extras' is empty — refusing to ship a slim image"
-          exit 1
       - name: Free up disk space
         if: inputs.free-disk
         uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # main as of 2026-07-23
@@ -104,8 +97,6 @@ jobs:
           platforms: ${{ inputs.platforms }}
           push: true
           provenance: false
-          build-args: |
-            EXTRAS=${{ inputs.extras }}
           tags: ${{ steps.tags.outputs.tags }}
           cache-from: type=gha,scope=${{ inputs.cache-scope }}
           cache-to: type=gha,scope=${{ inputs.cache-scope }},mode=max

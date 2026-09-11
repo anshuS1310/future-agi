@@ -155,6 +155,13 @@ def _platform_simulator_material() -> tuple[dict[str, str], bytes | None]:
         "SIMULATOR_STT_PROVIDER",
         "SIMULATOR_TTS_MODEL",
         "SIMULATOR_TTS_PROVIDER",
+        # Observe credentials for the guest. The harness's model calls happen inside the sandbox,
+        # so without these a run is only readable as log text in the diagnostics archive.
+        "HARNESS_OBSERVABILITY",
+        "FI_API_KEY",
+        "FI_SECRET_KEY",
+        "FI_BASE_URL",
+        "FI_HARNESS_PROJECT",
         # The caller's surroundings. Without these a hosted call is always heard in the clear,
         # whatever the scenario asked for, because the simulator reads them from its environment.
         "ALK_BACKGROUND_NOISE",
@@ -1050,6 +1057,22 @@ def _resolved_egress_domains(
     values: list[str] = [domain for domain in base_domains if isinstance(domain, str)]
     values.extend(_provider_egress_domains(target_secrets))
     values.extend(_provider_egress_domains(simulator_env))
+    # Observe, when the guest is given credentials for it. Derived rather than requested, because a
+    # customer cannot be expected to know the collector is a dependency of their own run.
+    simulator_values = {str(k).upper(): v for k, v in simulator_env.items()}
+    observability_off = str(
+        simulator_values.get("HARNESS_OBSERVABILITY") or ""
+    ).strip().lower() in {"0", "off", "false", "no"}
+    if (
+        not observability_off
+        and simulator_values.get("FI_API_KEY")
+        and simulator_values.get("FI_SECRET_KEY")
+    ):
+        collector = _hostname_from_url(
+            str(simulator_values.get("FI_BASE_URL") or "https://api.futureagi.com")
+        )
+        if collector:
+            values.append(collector)
     # The simulated caller rides the platform LiveKit server whenever the target connector does
     # not supply its own (Vapi/Retell); its signaling and TURN hosts are platform config, never
     # derivable from customer input. LiveKit targets share the customer's server, so skipping

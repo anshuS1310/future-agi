@@ -3028,13 +3028,38 @@ def prepare_dispatch_payload(
         agent["config"] = config
         dispatched["agent"] = agent
     if job is not None:
+        metadata = dict(dispatched.get("metadata") or {})
         offered = _offered_eval_catalogue(job)
         if offered:
             # Offered, not required: a guest that ignores it selects nothing.
-            metadata = dict(dispatched.get("metadata") or {})
             metadata["available_evals"] = offered
-            dispatched["metadata"] = metadata
+        metadata["telemetry"] = _telemetry_context(job, dispatched)
+        dispatched["metadata"] = metadata
     return dispatched
+
+
+def _telemetry_context(job: Any, dispatched: dict[str, Any]) -> dict[str, Any]:
+    """Identifiers the guest attaches to its traces.
+
+    Every harness job reports into one platform-owned Observe account rather than the customer's,
+    so tenancy has to travel as attributes or a run cannot be told apart from the thousands of
+    others in the same project. These are identifiers only: no names, addresses, emails, prompts or
+    credentials, so the trace stays debuggable without carrying anyone's data into it.
+    """
+    agent = dispatched.get("agent") or {}
+    security = dispatched.get("security") or {}
+    context = {
+        "organization_id": str(getattr(job, "organization_id", "") or ""),
+        "workspace_id": str(getattr(job, "workspace_id", "") or ""),
+        "job_id": str(getattr(job, "id", "") or ""),
+        "run_id": str(getattr(job, "run_id", "") or ""),
+        "connector": str(agent.get("connector") or ""),
+        "scenario_count": dispatched.get("scenario_count"),
+        "read_only_source": bool(security.get("read_only_source", True)),
+        "snapshot": str(os.environ.get("ALK_DAYTONA_SNAPSHOT") or ""),
+        "deployment": str(os.environ.get("CLOUD_DEPLOYMENT") or "self-hosted"),
+    }
+    return {name: value for name, value in context.items() if value not in ("", None)}
 
 
 def _offered_eval_catalogue(job: Any) -> list[dict[str, Any]]:

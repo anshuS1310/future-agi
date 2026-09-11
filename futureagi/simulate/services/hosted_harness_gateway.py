@@ -155,6 +155,12 @@ def _platform_simulator_material() -> tuple[dict[str, str], bytes | None]:
         "SIMULATOR_STT_PROVIDER",
         "SIMULATOR_TTS_MODEL",
         "SIMULATOR_TTS_PROVIDER",
+        # Observe credentials for the guest. The harness's model calls happen inside the sandbox,
+        # so without these a run is only readable as log text in the diagnostics archive.
+        "HARNESS_OBSERVABILITY",
+        "FI_API_KEY",
+        "FI_SECRET_KEY",
+        "FI_HARNESS_PROJECT",
         # The caller's surroundings. Without these a hosted call is always heard in the clear,
         # whatever the scenario asked for, because the simulator reads them from its environment.
         "ALK_BACKGROUND_NOISE",
@@ -166,6 +172,15 @@ def _platform_simulator_material() -> tuple[dict[str, str], bytes | None]:
         value = str(os.environ.get(name) or "").strip()
         if value:
             values[name] = value
+    # The sandbox resolves nothing on our network, so the guest's collector is configured
+    # separately and only falls back to ours when they are the same host.
+    collector = str(
+        os.environ.get("ALK_HOSTED_FI_BASE_URL")
+        or os.environ.get("FI_BASE_URL")
+        or ""
+    ).strip()
+    if collector:
+        values["FI_BASE_URL"] = collector
     if project:
         values["GOOGLE_CLOUD_PROJECT"] = project
     if credential_bytes is not None:
@@ -1062,6 +1077,23 @@ def _resolved_egress_domains(
     values: list[str] = [domain for domain in base_domains if isinstance(domain, str)]
     values.extend(_provider_egress_domains(target_secrets))
     values.extend(_provider_egress_domains(simulator_env))
+    # Observe, when the guest is given credentials for it. Derived rather than requested, because a
+    # customer cannot be expected to know the collector is a dependency of their own run.
+    simulator_values = {str(k).upper(): v for k, v in simulator_env.items()}
+    observability_off = str(
+        simulator_values.get("HARNESS_OBSERVABILITY") or ""
+    ).strip().lower() in {"0", "off", "false", "no"}
+    if (
+        not observability_off
+        and simulator_values.get("FI_API_KEY")
+        and simulator_values.get("FI_SECRET_KEY")
+    ):
+        # No default: the collector is reached on its own port and the host differs per
+        # environment, so an unset FI_BASE_URL means the guest has nowhere to report and there is
+        # nothing to allow. Guessing one would open a domain that never receives a span.
+        collector = _hostname_from_url(simulator_values.get("FI_BASE_URL"))
+        if collector:
+            values.append(collector)
     # The simulated caller rides the platform LiveKit server whenever the target connector does
     # not supply its own (Vapi/Retell); its signaling and TURN hosts are platform config, never
     # derivable from customer input. LiveKit targets share the customer's server, so skipping
@@ -3020,13 +3052,38 @@ def prepare_dispatch_payload(
         agent["config"] = config
         dispatched["agent"] = agent
     if job is not None:
+        metadata = dict(dispatched.get("metadata") or {})
         offered = _offered_eval_catalogue(job)
         if offered:
             # Offered, not required: a guest that ignores it selects nothing.
-            metadata = dict(dispatched.get("metadata") or {})
             metadata["available_evals"] = offered
-            dispatched["metadata"] = metadata
+        metadata["telemetry"] = _telemetry_context(job, dispatched)
+        dispatched["metadata"] = metadata
     return dispatched
+
+
+def _telemetry_context(job: Any, dispatched: dict[str, Any]) -> dict[str, Any]:
+    """Identifiers the guest attaches to its traces.
+
+    Every harness job reports into one platform-owned Observe account rather than the customer's,
+    so tenancy has to travel as attributes or a run cannot be told apart from the thousands of
+    others in the same project. These are identifiers only: no names, addresses, emails, prompts or
+    credentials, so the trace stays debuggable without carrying anyone's data into it.
+    """
+    agent = dispatched.get("agent") or {}
+    security = dispatched.get("security") or {}
+    context = {
+        "organization_id": str(getattr(job, "organization_id", "") or ""),
+        "workspace_id": str(getattr(job, "workspace_id", "") or ""),
+        "job_id": str(getattr(job, "id", "") or ""),
+        "run_id": str(getattr(job, "run_id", "") or ""),
+        "connector": str(agent.get("connector") or ""),
+        "scenario_count": dispatched.get("scenario_count"),
+        "read_only_source": bool(security.get("read_only_source", True)),
+        "snapshot": str(os.environ.get("ALK_DAYTONA_SNAPSHOT") or ""),
+        "deployment": str(os.environ.get("CLOUD_DEPLOYMENT") or "self-hosted"),
+    }
+    return {name: value for name, value in context.items() if value not in ("", None)}
 
 
 def _offered_eval_catalogue(job: Any) -> list[dict[str, Any]]:

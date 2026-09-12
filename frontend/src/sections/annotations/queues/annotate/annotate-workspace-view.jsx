@@ -60,6 +60,7 @@ import {
 } from "./annotation-view-mode";
 import useKeyboardShortcuts from "./use-keyboard-shortcuts";
 import { QUEUE_ROLES, hasQueueRole, isQueueAnnotatorRole, shortId } from "../constants";
+import { SS_KEY_USER_ID } from "src/utils/sessionKeys";
 
 const MAX_HISTORY = 50;
 
@@ -264,7 +265,7 @@ export default function AnnotateWorkspaceView() {
   const currentUserId = String(
     user?.id ||
       (typeof window !== "undefined"
-        ? window.sessionStorage.getItem("currentUserId")
+        ? window.sessionStorage.getItem(SS_KEY_USER_ID)
         : "") ||
       "",
   );
@@ -1415,9 +1416,7 @@ export default function AnnotateWorkspaceView() {
     isWaitingForAnnotatorSelection ||
     isInitialDetailLoading
   ) {
-    return (
-      <LoadingScreen sx={{ height: "80vh" }} />
-    );
+    return <LoadingScreen sx={{ height: "80vh" }} />;
   }
 
   // Reservation conflict

@@ -114,9 +114,8 @@ describe("QueueAgreementTab", () => {
 
     render(<QueueAgreementTab queueId="queue-1" />);
 
-    const progressBar = screen.getByRole("progressbar");
-    expect(progressBar).toBeInTheDocument();
-    expect(progressBar).toHaveClass("MuiLinearProgress-root");
+    const status = screen.getByRole("status");
+    expect(status).toHaveAttribute("aria-busy", "true");
     expect(screen.queryByText("Overall Agreement")).not.toBeInTheDocument();
   });
 

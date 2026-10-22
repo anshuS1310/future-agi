@@ -650,7 +650,12 @@ export default function DashboardsListView() {
                 Created by
               </Typography>
 
-              {canDelete && <Box sx={{ width: 28, flexShrink: 0 }} />}
+              {canDelete && (
+                <Box
+                  data-testid="dashboards-header-delete-spacer"
+                  sx={{ width: 28, flexShrink: 0 }}
+                />
+              )}
             </Stack>
 
             {filteredDashboards.map((db) => (

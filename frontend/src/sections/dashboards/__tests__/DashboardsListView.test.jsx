@@ -143,7 +143,7 @@ describe("DashboardsListView", () => {
     );
   });
 
-  it("renders the delete button and delete spacer when canDelete is true", () => {
+  it("renders the delete button and header delete spacer when canDelete is true", () => {
     h.canEdit = {
       canCreate: true,
       canUpdate: true,
@@ -155,9 +155,13 @@ describe("DashboardsListView", () => {
 
     // Row has delete icon button
     expect(container.querySelector(".row-actions")).toBeInTheDocument();
+    // Header reserves the same width so its columns line up with the rows
+    expect(
+      screen.getByTestId("dashboards-header-delete-spacer"),
+    ).toBeInTheDocument();
   });
 
-  it("omits the delete button when canDelete is false", () => {
+  it("omits the delete button and header delete spacer when canDelete is false", () => {
     h.canEdit = {
       canCreate: false,
       canUpdate: false,
@@ -169,5 +173,9 @@ describe("DashboardsListView", () => {
 
     // Row does not have delete icon button for Viewers
     expect(container.querySelector(".row-actions")).not.toBeInTheDocument();
+    // Header must not reserve space for a button that is not there
+    expect(
+      screen.queryByTestId("dashboards-header-delete-spacer"),
+    ).not.toBeInTheDocument();
   });
 });

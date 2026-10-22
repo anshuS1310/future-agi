@@ -295,8 +295,9 @@ const HuggingFaceView = () => {
         variant: "success",
       });
       setShow(false);
-      navigate(`/dashboard/develop/${data?.data?.result?.datasetId}`);
+      navigate(`/dashboard/develop/${data?.data?.result?.dataset_id}`);
     },
+    meta: { errorHandled: true },
     onError: (error) => {
       enqueueSnackbar(
         getRequestErrorMessage(error, "Failed to create dataset", {

@@ -18,11 +18,11 @@ import {
   TableHead,
   TableRow,
   Chip,
-  CircularProgress,
   Skeleton,
   IconButton,
 } from "@mui/material";
 import Iconify from "src/components/iconify";
+import { LoadingScreen } from "src/components/loading-screen";
 import SectionHeader from "../components/SectionHeader";
 import { GATEWAY_ICONS } from "../constants/gatewayIcons";
 import { enqueueSnackbar } from "notistack";
@@ -67,12 +67,6 @@ const BUDGET_LEVEL_LABELS = {
   orgLimit: "Organization",
   hard_limit: "Hard Limit",
   hardLimit: "Hard Limit",
-  per_key: "Per API Key",
-  perKey: "Per API Key",
-  per_user: "Per User",
-  perUser: "Per User",
-  per_model: "Per Model",
-  perModel: "Per Model",
 };
 
 function getBudgetLevelLabel(level) {
@@ -559,9 +553,7 @@ const AuditLogTab = ({ gatewayId }) => {
 
   if (isLoading) {
     return (
-      <Box display="flex" justifyContent="center" py={4}>
-        <CircularProgress />
-      </Box>
+      <LoadingScreen variant="orbit" sx={{ minHeight: "50vh" }} />
     );
   }
 

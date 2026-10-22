@@ -1,5 +1,5 @@
 import PropTypes from "prop-types";
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   Box,
@@ -17,18 +17,10 @@ import {
   Stack,
 } from "@mui/material";
 import { LoadingScreen } from "src/components/loading-screen";
-import {
-  useAnnotationQueueDetail,
-  useQueueAgreement,
-} from "src/api/annotation-queues/annotation-queues";
-import { useAuthContext } from "src/auth/hooks";
+import { useQueueAgreement } from "src/api/annotation-queues/annotation-queues";
 import { paths } from "src/routes/paths";
 import Iconify from "src/components/iconify";
-import {
-  QUEUE_ROLES,
-  hasQueueRole,
-  shortId,
-} from "../constants";
+import { shortId } from "../constants";
 import { WORKSPACE_MODES } from "../annotate/annotation-view-mode";
 
 function getAgreementColor(pct) {
@@ -43,27 +35,14 @@ function formatPct(val) {
   return `${(val * 100).toFixed(1)}%`;
 }
 
-export default function QueueAgreementTab({ queueId }) {
+export default function QueueAgreementTab({
+  queueId,
+  canViewSubmissions = false,
+}) {
   const navigate = useNavigate();
-  const { user } = useAuthContext();
-  const currentUserId = user?.id ? String(user.id) : null;
-  const { data: queue } = useAnnotationQueueDetail(queueId);
   const { data: agreement, isLoading } = useQueueAgreement(queueId);
   const [anchorEl, setAnchorEl] = useState(null);
   const [selectedLabelId, setSelectedLabelId] = useState(null);
-
-  const myQueueMembership = useMemo(() => {
-    if (!queue || !user) return null;
-    if (Array.isArray(queue.viewer_roles) && queue.viewer_roles.length > 0) {
-      return { role: queue.viewer_role, roles: queue.viewer_roles };
-    }
-    const annotators = queue.annotators || [];
-    return annotators.find((a) => String(a.user_id) === currentUserId) || null;
-  }, [queue, user, currentUserId]);
-
-  const isManager = hasQueueRole(myQueueMembership, QUEUE_ROLES.MANAGER);
-  const canViewSubmissions =
-    hasQueueRole(myQueueMembership, QUEUE_ROLES.REVIEWER) || isManager;
 
   const handleOpenPopover = (event, labelId) => {
     setAnchorEl(event.currentTarget);
@@ -327,4 +306,5 @@ export default function QueueAgreementTab({ queueId }) {
 
 QueueAgreementTab.propTypes = {
   queueId: PropTypes.string.isRequired,
+  canViewSubmissions: PropTypes.bool,
 };

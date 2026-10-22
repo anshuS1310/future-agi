@@ -5,8 +5,6 @@ import QueueAgreementTab from "../queue-agreement-tab";
 
 const mocks = vi.hoisted(() => ({
   navigate: vi.fn(),
-  useAuthContext: vi.fn(),
-  useAnnotationQueueDetail: vi.fn(),
   useQueueAgreement: vi.fn(),
 }));
 
@@ -18,12 +16,7 @@ vi.mock("react-router-dom", async () => {
   };
 });
 
-vi.mock("src/auth/hooks", () => ({
-  useAuthContext: () => mocks.useAuthContext(),
-}));
-
 vi.mock("src/api/annotation-queues/annotation-queues", () => ({
-  useAnnotationQueueDetail: (...args) => mocks.useAnnotationQueueDetail(...args),
   useQueueAgreement: (...args) => mocks.useQueueAgreement(...args),
 }));
 
@@ -32,18 +25,6 @@ vi.mock("src/components/iconify", () => ({
     <span data-testid="iconify" data-icon={icon} {...props} />
   ),
 }));
-
-const mockQueueDetailReviewer = {
-  id: "queue-1",
-  name: "Test Queue",
-  viewer_roles: ["reviewer"],
-  annotators: [
-    {
-      user_id: "user-reviewer",
-      roles: ["reviewer"],
-    },
-  ],
-};
 
 const mockAgreementData = {
   overall_agreement: 0.85,
@@ -93,13 +74,6 @@ const mockAgreementData = {
 describe("QueueAgreementTab", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.useAuthContext.mockReturnValue({
-      user: { id: "user-reviewer", email: "reviewer@example.com" },
-    });
-    mocks.useAnnotationQueueDetail.mockReturnValue({
-      data: mockQueueDetailReviewer,
-      isLoading: false,
-    });
     mocks.useQueueAgreement.mockReturnValue({
       data: mockAgreementData,
       isLoading: false,
@@ -171,9 +145,9 @@ describe("QueueAgreementTab", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("navigates to workspace with mode=review when clicked by a reviewer", async () => {
+  it("navigates to workspace with mode=review when the viewer can view submissions", async () => {
     const user = userEvent.setup();
-    render(<QueueAgreementTab queueId="queue-1" />);
+    render(<QueueAgreementTab queueId="queue-1" canViewSubmissions />);
 
     const trigger = screen.getByRole("button", { name: "25" });
     await user.click(trigger);
@@ -186,27 +160,9 @@ describe("QueueAgreementTab", () => {
     );
   });
 
-  it("navigates to workspace with mode=annotate when clicked by an annotator", async () => {
+  it("navigates to workspace with mode=annotate when the viewer cannot view submissions", async () => {
     const user = userEvent.setup();
-    mocks.useAuthContext.mockReturnValue({
-      user: { id: "user-annotator", email: "annotator@example.com" },
-    });
-    mocks.useAnnotationQueueDetail.mockReturnValue({
-      data: {
-        id: "queue-1",
-        name: "Test Queue",
-        viewer_roles: ["annotator"],
-        annotators: [
-          {
-            user_id: "user-annotator",
-            roles: ["annotator"],
-          },
-        ],
-      },
-      isLoading: false,
-    });
-
-    render(<QueueAgreementTab queueId="queue-1" />);
+    render(<QueueAgreementTab queueId="queue-1" canViewSubmissions={false} />);
 
     const trigger = screen.getByRole("button", { name: "25" });
     await user.click(trigger);
@@ -216,70 +172,6 @@ describe("QueueAgreementTab", () => {
 
     expect(mocks.navigate).toHaveBeenCalledWith(
       "/dashboard/annotations/queues/queue-1/annotate?itemId=3fa85f64-5717-4562-b3fc-2c963f66af00&mode=annotate",
-    );
-  });
-
-  it("navigates to workspace with mode=review when clicked by a manager", async () => {
-    const user = userEvent.setup();
-    mocks.useAuthContext.mockReturnValue({
-      user: { id: "user-manager", email: "manager@example.com" },
-    });
-    mocks.useAnnotationQueueDetail.mockReturnValue({
-      data: {
-        id: "queue-1",
-        name: "Test Queue",
-        viewer_roles: ["manager"],
-        annotators: [
-          {
-            user_id: "user-manager",
-            roles: ["manager"],
-          },
-        ],
-      },
-      isLoading: false,
-    });
-
-    render(<QueueAgreementTab queueId="queue-1" />);
-
-    const trigger = screen.getByRole("button", { name: "25" });
-    await user.click(trigger);
-
-    const itemLink = screen.getByText("Item #3fa85f64");
-    await user.click(itemLink);
-
-    expect(mocks.navigate).toHaveBeenCalledWith(
-      "/dashboard/annotations/queues/queue-1/annotate?itemId=3fa85f64-5717-4562-b3fc-2c963f66af00&mode=review",
-    );
-  });
-
-  it("navigates to workspace with mode=review when clicked by a reviewer who is also an annotator", async () => {
-    const user = userEvent.setup();
-    mocks.useAuthContext.mockReturnValue({
-      user: { id: "user-dual", email: "dual@example.com" },
-    });
-    mocks.useAnnotationQueueDetail.mockReturnValue({
-      data: {
-        id: "queue-1",
-        name: "Test Queue",
-        viewer_role: "reviewer",
-        viewer_roles: ["reviewer", "annotator"],
-        annotators: [
-          {
-            user_id: "user-dual",
-            roles: ["reviewer", "annotator"],
-          },
-        ],
-      },
-      isLoading: false,
-    });
-
-    render(<QueueAgreementTab queueId="queue-1" />);
-
-    await user.click(screen.getByRole("button", { name: "25" }));
-    await user.click(screen.getByText("Item #3fa85f64"));
-
-    expect(mocks.navigate).toHaveBeenCalledWith(
-      "/dashboard/annotations/queues/queue-1/annotate?itemId=3fa85f64-5717-4562-b3fc-2c963f66af00&mode=review",
     );
   });
 

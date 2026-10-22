@@ -2,7 +2,6 @@ import React, { useState, useMemo } from "react";
 import PropTypes from "prop-types";
 import {
   Avatar,
-  AvatarGroup,
   Box,
   Button,
   Checkbox,
@@ -83,8 +82,8 @@ function getDashboardViewers(db) {
     seen.add(u.email);
     users.push({ ...u, displayName: u.name || u.email, time });
   };
-  addUser(db.created_by, db.created_at);
   addUser(db.updated_by, db.updated_at);
+  addUser(db.created_by, db.created_at);
   return users;
 }
 
@@ -92,10 +91,45 @@ function ViewerAvatars({ db }) {
   const theme = useTheme();
   const isDark = theme.palette.mode === "dark";
   const viewers = getDashboardViewers(db);
-  if (!viewers.length) return null;
+  const creatorName = db.created_by?.name || db.created_by?.email;
 
-  const shown = viewers.slice(0, 3);
-  const extra = viewers.length - 3;
+  // The column is "Created by", so the cell shows only the creator; the
+  // tooltip keeps the full created / last-edited history.
+  const cell = (
+    <Stack direction="row" alignItems="center" gap={1} sx={{ minWidth: 0 }}>
+      {creatorName ? (
+        <>
+          <Avatar
+            onClick={(e) => e.stopPropagation()}
+            sx={{
+              width: 26,
+              height: 26,
+              fontSize: "11px",
+              fontWeight: 700,
+              cursor: "default",
+              flexShrink: 0,
+              bgcolor: getAvatarColor(creatorName),
+            }}
+          >
+            {getInitials(creatorName)}
+          </Avatar>
+          <Typography
+            variant="body2"
+            noWrap
+            sx={{ color: "text.primary", minWidth: 0, flex: 1 }}
+          >
+            {creatorName}
+          </Typography>
+        </>
+      ) : (
+        <Typography variant="body2" color="text.disabled">
+          —
+        </Typography>
+      )}
+    </Stack>
+  );
+
+  if (!viewers.length) return cell;
 
   return (
     <Tooltip
@@ -268,51 +302,7 @@ function ViewerAvatars({ db }) {
         </Box>
       }
     >
-      <Stack
-        direction="row"
-        alignItems="center"
-        gap={1}
-        sx={{ minWidth: 0 }}
-      >
-        <AvatarGroup
-          max={3}
-          onClick={(e) => e.stopPropagation()}
-          sx={{
-            cursor: "default",
-            flexShrink: 0,
-            "& .MuiAvatar-root": {
-              width: 26,
-              height: 26,
-              fontSize: "11px",
-              fontWeight: 700,
-              borderWidth: 2,
-            },
-          }}
-        >
-          {shown.map((v, i) => (
-            <Avatar key={i} sx={{ bgcolor: getAvatarColor(v.displayName) }}>
-              {getInitials(v.displayName)}
-            </Avatar>
-          ))}
-        </AvatarGroup>
-        {extra > 0 && (
-          <Typography variant="caption" color="text.secondary" sx={{ flexShrink: 0 }}>
-            + {extra}
-          </Typography>
-        )}
-        <Typography
-          variant="body2"
-          noWrap
-          sx={{
-            ml: 1,
-            color: "text.primary",
-            minWidth: 0,
-            flex: 1,
-          }}
-        >
-          {db.created_by?.name || db.created_by?.email}
-        </Typography>
-      </Stack>
+      {cell}
     </Tooltip>
   );
 }

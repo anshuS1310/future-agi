@@ -1,29 +1,27 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent } from "src/utils/test-utils";
+import { render, screen, fireEvent, within } from "src/utils/test-utils";
 import DashboardsListView from "../DashboardsListView";
 import { paths } from "src/routes/paths";
 
 const navigateMock = vi.fn();
 
+const ALICE = { name: "Alice Smith", email: "alice@example.com" };
+const BOB = { name: "Bob Editor", email: "bob@example.com" };
+
+const makeDashboard = (overrides = {}) => ({
+  id: "dash-1",
+  name: "Engineering Metrics",
+  description: "Overview dashboard",
+  widget_count: 5,
+  created_at: "2026-06-15T10:00:00.000Z",
+  updated_at: "2026-06-15T12:00:00.000Z",
+  created_by: ALICE,
+  updated_by: BOB,
+  ...overrides,
+});
+
 const h = vi.hoisted(() => ({
-  dashboards: [
-    {
-      id: "dash-1",
-      name: "Engineering Metrics",
-      description: "Overview dashboard",
-      widget_count: 5,
-      created_at: "2026-06-15T10:00:00.000Z",
-      updated_at: "2026-06-15T12:00:00.000Z",
-      created_by: {
-        name: "Alice Smith",
-        email: "alice@example.com",
-      },
-      updated_by: {
-        name: "Bob Editor",
-        email: "bob@example.com",
-      },
-    },
-  ],
+  dashboards: [],
   canEdit: {
     canCreate: true,
     canUpdate: true,
@@ -59,6 +57,7 @@ vi.mock("src/components/iconify", () => ({
 describe("DashboardsListView", () => {
   beforeEach(() => {
     navigateMock.mockReset();
+    h.dashboards = [makeDashboard()];
     h.canEdit = {
       canCreate: true,
       canUpdate: true,
@@ -91,13 +90,57 @@ describe("DashboardsListView", () => {
     expect(screen.getByText("Alice Smith")).toBeInTheDocument();
   });
 
+  it("shows only the creator's avatar in the Created by cell when someone else edited it", () => {
+    const { container } = render(<DashboardsListView />);
+
+    const avatars = container.querySelectorAll(".MuiAvatar-root");
+    expect(avatars).toHaveLength(1);
+    expect(avatars[0]).toHaveTextContent("AS");
+    expect(screen.queryByText("BE")).not.toBeInTheDocument();
+  });
+
+  it("shows a dash, not the editor, when the creator account no longer exists", async () => {
+    h.dashboards = [makeDashboard({ created_by: null })];
+
+    const { container } = render(<DashboardsListView />);
+
+    expect(screen.getByText("—")).toBeInTheDocument();
+    expect(container.querySelectorAll(".MuiAvatar-root")).toHaveLength(0);
+    expect(screen.queryByText("BE")).not.toBeInTheDocument();
+
+    // The last editor is still available on hover.
+    fireEvent.mouseOver(screen.getByText("—"));
+    expect(
+      await screen.findByText("Last edited by Bob Editor", {}, { timeout: 5000 }),
+    ).toBeInTheDocument();
+  });
+
+  it("keeps the created and last-edited history in the hover tooltip, most recent first", async () => {
+    render(<DashboardsListView />);
+
+    fireEvent.mouseOver(screen.getByText("Alice Smith"));
+
+    expect(
+      await screen.findByText("Created by Alice Smith", {}, { timeout: 5000 }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Last edited by Bob Editor")).toBeInTheDocument();
+
+    const recent = screen.getByText("Recently Viewed By:").nextElementSibling;
+    const names = within(recent)
+      .getAllByText(/^(Alice Smith|Bob Editor)$/)
+      .map((node) => node.textContent);
+    expect(names).toEqual(["Bob Editor", "Alice Smith"]);
+  });
+
   it("navigates to dashboard detail when clicking the creator name in the Created by cell", () => {
     render(<DashboardsListView />);
 
     const creatorName = screen.getByText("Alice Smith");
     fireEvent.click(creatorName);
 
-    expect(navigateMock).toHaveBeenCalledWith(paths.dashboard.dashboards.detail("dash-1"));
+    expect(navigateMock).toHaveBeenCalledWith(
+      paths.dashboard.dashboards.detail("dash-1"),
+    );
   });
 
   it("renders the delete button and delete spacer when canDelete is true", () => {

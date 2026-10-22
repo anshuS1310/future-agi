@@ -111,7 +111,11 @@ describe("DashboardsListView", () => {
     // The last editor is still available on hover.
     fireEvent.mouseOver(screen.getByText("—"));
     expect(
-      await screen.findByText("Last edited by Bob Editor", {}, { timeout: 5000 }),
+      await screen.findByText(
+        "Last edited by Bob Editor",
+        {},
+        { timeout: 5000 },
+      ),
     ).toBeInTheDocument();
   });
 

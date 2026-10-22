@@ -398,9 +398,7 @@ export default function DashboardsListView() {
   };
 
   if (isLoading) {
-    return (
-      <LoadingScreen sx={{ height: "60vh" }} />
-    );
+    return <LoadingScreen sx={{ height: "60vh" }} />;
   }
 
   return (
@@ -709,7 +707,12 @@ export default function DashboardsListView() {
                 <Typography
                   variant="caption"
                   color="text.disabled"
-                  sx={{ width: 100, mr: 1.5, whiteSpace: "nowrap", flexShrink: 0 }}
+                  sx={{
+                    width: 100,
+                    mr: 1.5,
+                    whiteSpace: "nowrap",
+                    flexShrink: 0,
+                  }}
                 >
                   {db.widget_count || 0} widget
                   {db.widget_count !== 1 ? "s" : ""}
@@ -718,7 +721,12 @@ export default function DashboardsListView() {
                 <Typography
                   variant="caption"
                   color="text.secondary"
-                  sx={{ width: 120, mr: 2, whiteSpace: "nowrap", flexShrink: 0 }}
+                  sx={{
+                    width: 120,
+                    mr: 2,
+                    whiteSpace: "nowrap",
+                    flexShrink: 0,
+                  }}
                 >
                   {fDate(db.updated_at || db.created_at)}
                 </Typography>

@@ -219,7 +219,7 @@ describe("QueueAgreementTab", () => {
     );
   });
 
-  it("navigates to workspace with mode=annotate when clicked by a manager", async () => {
+  it("navigates to workspace with mode=review when clicked by a manager", async () => {
     const user = userEvent.setup();
     mocks.useAuthContext.mockReturnValue({
       user: { id: "user-manager", email: "manager@example.com" },
@@ -248,7 +248,38 @@ describe("QueueAgreementTab", () => {
     await user.click(itemLink);
 
     expect(mocks.navigate).toHaveBeenCalledWith(
-      "/dashboard/annotations/queues/queue-1/annotate?itemId=3fa85f64-5717-4562-b3fc-2c963f66af00&mode=annotate",
+      "/dashboard/annotations/queues/queue-1/annotate?itemId=3fa85f64-5717-4562-b3fc-2c963f66af00&mode=review",
+    );
+  });
+
+  it("navigates to workspace with mode=review when clicked by a reviewer who is also an annotator", async () => {
+    const user = userEvent.setup();
+    mocks.useAuthContext.mockReturnValue({
+      user: { id: "user-dual", email: "dual@example.com" },
+    });
+    mocks.useAnnotationQueueDetail.mockReturnValue({
+      data: {
+        id: "queue-1",
+        name: "Test Queue",
+        viewer_role: "reviewer",
+        viewer_roles: ["reviewer", "annotator"],
+        annotators: [
+          {
+            user_id: "user-dual",
+            roles: ["reviewer", "annotator"],
+          },
+        ],
+      },
+      isLoading: false,
+    });
+
+    render(<QueueAgreementTab queueId="queue-1" />);
+
+    await user.click(screen.getByRole("button", { name: "25" }));
+    await user.click(screen.getByText("Item #3fa85f64"));
+
+    expect(mocks.navigate).toHaveBeenCalledWith(
+      "/dashboard/annotations/queues/queue-1/annotate?itemId=3fa85f64-5717-4562-b3fc-2c963f66af00&mode=review",
     );
   });
 

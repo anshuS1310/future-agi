@@ -29,7 +29,7 @@ import {
   hasQueueRole,
   shortId,
 } from "../constants";
-import { resolveQueueItemWorkspaceMode } from "../annotate/annotation-view-mode";
+import { WORKSPACE_MODES } from "../annotate/annotation-view-mode";
 
 function getAgreementColor(pct) {
   if (pct === null || pct === undefined) return "text.secondary";
@@ -62,8 +62,6 @@ export default function QueueAgreementTab({ queueId }) {
   }, [queue, user, currentUserId]);
 
   const isManager = hasQueueRole(myQueueMembership, QUEUE_ROLES.MANAGER);
-  const canAnnotateQueue =
-    hasQueueRole(myQueueMembership, QUEUE_ROLES.ANNOTATOR) || isManager;
   const canViewSubmissions =
     hasQueueRole(myQueueMembership, QUEUE_ROLES.REVIEWER) || isManager;
 
@@ -274,10 +272,12 @@ export default function QueueAgreementTab({ queueId }) {
                   component="button"
                   variant="body2"
                   onClick={() => {
-                    const mode = resolveQueueItemWorkspaceMode({
-                      canViewSubmissions,
-                      canAnnotate: canAnnotateQueue,
-                    });
+                    // Conflicting answers are only shown side by side in
+                    // review mode, so anyone who can view submissions opens
+                    // the item there; annotator-only members annotate.
+                    const mode = canViewSubmissions
+                      ? WORKSPACE_MODES.REVIEW
+                      : WORKSPACE_MODES.ANNOTATE;
                     navigate(
                       `${paths.dashboard.annotations.annotate(queueId)}?itemId=${itemId}&mode=${mode}`,
                     );
